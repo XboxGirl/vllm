@@ -276,7 +276,6 @@ class RequestState:
         finish_reason: FinishReason | None,
         stop_reason: int | str | None,
         kv_transfer_params: dict[str, Any] | None = None,
-        ec_transfer_params: dict[str, Any] | None = None,
     ) -> RequestOutput | PoolingRequestOutput | None:
         finished = finish_reason is not None
         final_only = self.output_kind == RequestOutputKind.FINAL_ONLY
@@ -337,11 +336,7 @@ class RequestState:
             external_req_id = self.parent_req.external_req_id
 
         return self._new_request_output(
-            external_req_id,
-            outputs,
-            finished,
-            kv_transfer_params,
-            ec_transfer_params,
+            external_req_id, outputs, finished, kv_transfer_params
         )
 
     def _new_request_output(
@@ -350,7 +345,6 @@ class RequestState:
         outputs: list[CompletionOutput] | list[PoolingOutput],
         finished: bool,
         kv_transfer_params: dict[str, Any] | None = None,
-        ec_transfer_params: dict[str, Any] | None = None,
     ) -> RequestOutput | PoolingRequestOutput:
         # If prompt embeds were used, put placeholder prompt token ids
         prompt_token_ids = self.prompt_token_ids
@@ -384,7 +378,6 @@ class RequestState:
             outputs=cast(list[CompletionOutput], outputs),
             finished=finished,
             kv_transfer_params=kv_transfer_params,
-            ec_transfer_params=ec_transfer_params,
             num_cached_tokens=self.num_cached_tokens,
             metrics=self.stats,
         )
@@ -513,7 +506,6 @@ class OutputProcessor:
                         finish_reason=FinishReason.ABORT,
                         stop_reason=None,
                         kv_transfer_params=None,
-                        ec_transfer_params=None,
                     )
                 ):
                     req_state.queue.put(request_output)
@@ -637,7 +629,13 @@ class OutputProcessor:
             finish_reason = engine_core_output.finish_reason
             stop_reason = engine_core_output.stop_reason
             kv_transfer_params = engine_core_output.kv_transfer_params
-ec_transfer_params = engine_core_output.ec_transfer_params
+            if (
+                engine_core_output.request_spec_decode_stats is not None
+                and req_state.stats is not None
+            ):
+                req_state.stats.request_spec_decode_stats = (
+                    engine_core_output.request_spec_decode_stats
+                )
             if engine_core_output.routed_experts is not None:
                 req_state.routed_experts_chunks.append(
                     engine_core_output.routed_experts
@@ -672,7 +670,6 @@ ec_transfer_params = engine_core_output.ec_transfer_params
                 finish_reason,
                 stop_reason,
                 kv_transfer_params,
-                ec_transfer_params,
             ):
                 if req_state.streaming_input:
                     request_output.finished = False

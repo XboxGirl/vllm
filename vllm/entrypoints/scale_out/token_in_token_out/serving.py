@@ -14,10 +14,7 @@ import pybase64 as base64
 from fastapi import Request
 
 from vllm.engine.protocol import EngineClient
-from vllm.entrypoints.generate.base.serving import (
-    GenerateBaseServing,
-    clamp_prompt_logprobs,
-)
+from vllm.entrypoints.logger import RequestLogger
 from vllm.entrypoints.openai.chat_completion.protocol import (
     ChatCompletionLogProb,
     ChatCompletionLogProbs,
@@ -30,9 +27,18 @@ from vllm.entrypoints.openai.engine.protocol import (
     RequestResponseMetadata,
     UsageInfo,
 )
+from vllm.entrypoints.openai.engine.serving import OpenAIServing, clamp_prompt_logprobs
 from vllm.entrypoints.openai.models.serving import OpenAIServingModels
-from vllm.entrypoints.serve.utils.api_utils import get_max_tokens, should_include_usage
-from vllm.entrypoints.serve.utils.request_logger import RequestLogger
+from vllm.entrypoints.serve.disagg.mm_serde import decode_mm_kwargs_item
+from vllm.entrypoints.serve.disagg.protocol import (
+    GenerateRequest,
+    GenerateResponse,
+    GenerateResponseChoice,
+    GenerateResponseStreamChoice,
+    GenerateStreamResponse,
+)
+from vllm.entrypoints.serve.render.serving import OpenAIServingRender
+from vllm.entrypoints.utils import get_max_tokens, should_include_usage
 from vllm.inputs import EngineInput, mm_input
 from vllm.logger import init_logger
 from vllm.logprobs import Logprob
@@ -42,31 +48,21 @@ from vllm.multimodal.inputs import (
     PlaceholderRange,
 )
 from vllm.outputs import RequestOutput
-from vllm.renderers.online_renderer import OnlineRenderer
 from vllm.sampling_params import RequestOutputKind, SamplingParams
 from vllm.utils.collection_utils import as_list
 from vllm.v1.metrics.stats import RequestSpecDecodeStats
 
-from .mm_serde import decode_mm_kwargs_item
-from .protocol import (
-    GenerateRequest,
-    GenerateResponse,
-    GenerateResponseChoice,
-    GenerateResponseStreamChoice,
-    GenerateStreamResponse,
-)
-
 logger = init_logger(__name__)
 
 
-class ServingTokens(GenerateBaseServing):
+class ServingTokens(OpenAIServing):
     """Provides Tokens IN <> Tokens OUT functionality to vLLM API."""
 
     def __init__(
         self,
         engine_client: EngineClient,
         models: OpenAIServingModels,
-        online_renderer: OnlineRenderer,
+        openai_serving_render: OpenAIServingRender,
         *,
         request_logger: RequestLogger | None,
         force_no_detokenize: bool = False,
@@ -80,7 +76,7 @@ class ServingTokens(GenerateBaseServing):
             request_logger=request_logger,
             return_tokens_as_token_ids=return_tokens_as_token_ids,
         )
-        self.online_renderer = online_renderer
+        self.openai_serving_render = openai_serving_render
         self.enable_prompt_tokens_details = enable_prompt_tokens_details
         self.enable_log_outputs = enable_log_outputs
         self.force_no_detokenize = force_no_detokenize
@@ -173,7 +169,7 @@ class ServingTokens(GenerateBaseServing):
                 cache_salt=request.cache_salt,
             )
         else:
-            (engine_input,) = await self.online_renderer.preprocess_completion(
+            (engine_input,) = await self.openai_serving_render.preprocess_completion(
                 request,
                 prompt_input=request.token_ids,
                 prompt_embeds=None,
@@ -312,10 +308,7 @@ class ServingTokens(GenerateBaseServing):
             completion_tokens=num_generated_tokens,
             total_tokens=num_prompt_tokens + num_generated_tokens,
         )
-        if (
-            self.enable_prompt_tokens_details
-            and final_res.num_cached_tokens is not None
-        ):
+        if self.enable_prompt_tokens_details and final_res.num_cached_tokens:
             # This info is not available at the /coordinator level
             usage.prompt_tokens_details = PromptTokenUsageInfo(
                 cached_tokens=final_res.num_cached_tokens
@@ -328,14 +321,14 @@ class ServingTokens(GenerateBaseServing):
         request_metadata.final_usage_info = usage
 
         response = GenerateResponse(
-            request_id=request_id,
+            id=request_id,
             created=created_time,
             model=model_name,
             choices=choices,
             usage=usage,
             prompt_logprobs=clamp_prompt_logprobs(final_res.prompt_logprobs),
             kv_transfer_params=final_res.kv_transfer_params,
-ec_transfer_params=final_res.ec_transfer_params,
+            request_spec_decode_stats=request_spec_decode_stats,
         )
 
         # Log complete response if output logging is enabled
@@ -413,14 +406,6 @@ ec_transfer_params=final_res.ec_transfer_params,
                     else:
                         logprobs = None
 
-                    routed_experts_b64 = None
-                    if output.routed_experts is not None:
-                        buf = io.BytesIO()
-                        np.save(buf, output.routed_experts)
-                        routed_experts_b64 = base64.b64encode(buf.getvalue()).decode(
-                            "ascii"
-                        )
-
                     chunk = GenerateStreamResponse(
                         request_id=request_id,
                         choices=[
@@ -429,7 +414,6 @@ ec_transfer_params=final_res.ec_transfer_params,
                                 logprobs=logprobs,
                                 finish_reason=finish_reason,
                                 token_ids=as_list(delta_token_ids),
-                                routed_experts=routed_experts_b64,
                             )
                         ],
                         request_spec_decode_stats=request_spec_decode_stats,
@@ -450,7 +434,7 @@ ec_transfer_params=final_res.ec_transfer_params,
                 total_tokens=num_prompt_tokens + total_completion_tokens,
             )
 
-            if self.enable_prompt_tokens_details and num_cached_tokens is not None:
+            if self.enable_prompt_tokens_details and num_cached_tokens:
                 final_usage_info.prompt_tokens_details = PromptTokenUsageInfo(
                     cached_tokens=num_cached_tokens
                 )
