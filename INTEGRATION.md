@@ -105,6 +105,27 @@ The module is imported via `vllm._genesis.bootstrap` at startup, which auto-appl
 
 ---
 
+## Code Review Bot Analysis (PR #43555)
+
+When this branch was accidentally submitted as PR #43555 against `vllm-project/vllm`, the automated code review bot (`gemini-code-assist`) flagged 4 critical issues in `vllm/_genesis/kernels/block_verify_sampler.py` at lines 137, 282, 351, and 436, claiming the cumulative sum tensor indexing was incorrect.
+
+**Verdict: Bot's critique is incorrect.**
+
+The bot assumed `cu_num_draft_tokens` is shape `[batch_size + 1]` starting with 0 (the `cu_seq_lens` pattern). In reality, in this file it is shape `[batch_size]` — a plain cumulative count array `[draft_0, draft_0+draft_1, ..., total]`. The code correctly constructs `cu_start` by prepending 0 and dropping the last element:
+
+```python
+cu_start = torch.empty_like(cu_num_draft_tokens)
+cu_start[0] = 0
+cu_start[1:] = cu_num_draft_tokens[:-1]
+num_draft_per_batch = cu_num_draft_tokens - cu_start
+```
+
+The Triton kernel indexing (`start_idx = 0 if req_idx == 0 else tl.load(ptr + req_idx - 1)`) is the correct pattern for this data layout. The bot's suggested fix (`ptr[req_idx]` / `ptr[req_idx + 1]`) would only work for arrays that start with 0 and have `batch_size + 1` elements — which is NOT the case here.
+
+**No changes needed.** The bot confused two different cumulative sum conventions used across vLLM.
+
+---
+
 ## Notes
 
 - Patches P3, P27, P61, P65, P67, P91, and P83 are **text patches** applied directly to vLLM source files.
