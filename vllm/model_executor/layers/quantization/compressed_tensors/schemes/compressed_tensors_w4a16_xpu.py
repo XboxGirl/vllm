@@ -237,7 +237,6 @@ class CompressedTensorsW4A16XPU(CompressedTensorsScheme):
 
         # Preferred convention: output channels are qweight axis 1.
         qweight_for_gemm = layer.qweight
-        expected_out_width = getattr(layer, "xpu_output_size", None)
 
         logger.debug(
             "CompressedTensorsW4A16XPU apply for %s: input=%s reshaped=%s "
@@ -264,34 +263,7 @@ class CompressedTensorsW4A16XPU(CompressedTensorsScheme):
             None,
         )
 
-        out_width = out.shape[-1]
-        # Be defensive against backend layout mismatches: if kernel output width
-        # disagrees with expected layer output, retry once with transposed
-        # qweight and keep the version that matches expected width.
-        if expected_out_width is not None and out_width != expected_out_width:
-            alt_qweight = qweight_for_gemm.t().contiguous()
-            logger.warning(
-                "CompressedTensorsW4A16XPU got unexpected output width %s "
-                "(expected %s) for %s; retrying with transposed qweight "
-                "shape=%s.",
-                out_width,
-                expected_out_width,
-                layer.__class__.__name__,
-                tuple(alt_qweight.shape),
-            )
-            alt_out = torch.ops._xpu_C.int4_gemm_w4a16(
-                reshaped_x,
-                alt_qweight,
-                bias,
-                layer.scales,
-                layer.qzeros,
-                group_size,
-                None,
-            )
-            if alt_out.shape[-1] == expected_out_width:
-                out = alt_out
-                out_width = alt_out.shape[-1]
-
+        out_width = layer.xpu_output_size
         out_shape = x.shape[:-1] + (out_width,)
         return out.reshape(out_shape)
 
