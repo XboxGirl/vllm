@@ -238,21 +238,6 @@ class CompressedTensorsW4A16XPU(CompressedTensorsScheme):
         # Preferred convention: output channels are qweight axis 1.
         qweight_for_gemm = layer.qweight
 
-        logger.debug(
-            "CompressedTensorsW4A16XPU apply for %s: input=%s reshaped=%s "
-            "qweight=%s qweight_for_gemm=%s scales=%s qzeros=%s "
-            "group_size=%s bias=%s",
-            layer.__class__.__name__,
-            tuple(x.shape),
-            tuple(reshaped_x.shape),
-            tuple(layer.qweight.shape),
-            tuple(qweight_for_gemm.shape),
-            tuple(layer.scales.shape),
-            tuple(layer.qzeros.shape),
-            group_size,
-            None if bias is None else tuple(bias.shape),
-        )
-
         out = torch.ops._xpu_C.int4_gemm_w4a16(
             reshaped_x,
             qweight_for_gemm,
