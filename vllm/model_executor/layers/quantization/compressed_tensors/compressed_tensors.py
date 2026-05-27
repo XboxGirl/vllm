@@ -41,6 +41,7 @@ from vllm.model_executor.layers.quantization.compressed_tensors.schemes import (
     CompressedTensorsW4A8Fp8,
     CompressedTensorsW4A8Int,
     CompressedTensorsW4A16Fp4,
+    CompressedTensorsW4A16XPU,
     CompressedTensorsW8A8Fp8,
     CompressedTensorsW8A8Int8,
     CompressedTensorsW8A8Mxfp8,
@@ -639,6 +640,17 @@ class CompressedTensorsConfig(QuantizationConfig):
             and (format == CompressionFormat.pack_quantized.value)
             and (weight_quant.num_bits in WNA16_SUPPORTED_BITS)
         ):
+            if (
+                current_platform.is_xpu()
+                and weight_quant.num_bits == 4
+                and weight_quant.symmetric
+                and weight_quant.strategy == QuantizationStrategy.GROUP.value
+            ):
+                return CompressedTensorsW4A16XPU(
+                    strategy=weight_quant.strategy,
+                    group_size=weight_quant.group_size,
+                )
+
             return CompressedTensorsWNA16(
                 num_bits=weight_quant.num_bits,
                 strategy=weight_quant.strategy,
