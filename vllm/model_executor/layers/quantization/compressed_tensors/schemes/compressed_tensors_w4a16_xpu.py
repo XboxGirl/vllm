@@ -126,16 +126,57 @@ class CompressedTensorsW4A16XPU(CompressedTensorsScheme):
                 "checkpoint loader mapping."
             )
 
-        layer.qweight = torch.nn.Parameter(
-            layer.weight_packed.data,
-            requires_grad=False,
+        qw = layer.weight_packed.data  # (out, in//8), int32 — compressed-tensors layout
+        scales = layer.weight_scale.data  # (out, num_groups) — compressed-tensors layout
+        device = qw.device
+
+        out_size = qw.shape[0]
+        in_size = qw.shape[1] * self.pack_factor
+
+        if out_size % self.pack_factor != 0:
+            raise ValueError(
+                f"output_size ({out_size}) must be divisible by pack_factor "
+                f"({self.pack_factor}) for XPU int4 GEMM repacking."
+            )
+
+        # --- Repack (out, in//8) → (in, out//8) ---
+        # Compressed-tensors packs along the input dim; the oneDNN kernel (like
+        # AWQ) expects rows=input, columns=packed-output.  Full unpack →
+        # transpose → repack is required because the pack dimension changes.
+        shifts = torch.arange(
+            0, 32, self.num_bits, dtype=torch.int32, device=device
         )
+        mask = (1 << self.num_bits) - 1
+
+        # Unpack: (out, in//8) → (out, in)
+        unpacked = ((qw.unsqueeze(-1) >> shifts) & mask).reshape(out_size, in_size)
+
+        # Transpose: (out, in) → (in, out)
+        unpacked = unpacked.T.contiguous()
+
+        # Repack along output dim: (in, out//8)
+        repacked = (
+            unpacked
+            .reshape(in_size, out_size // self.pack_factor, self.pack_factor)
+            .to(torch.int32)
+            .__lshift__(shifts[None, None, :])
+            .sum(dim=-1, dtype=torch.int32)
+        )
+
+        layer.qweight = torch.nn.Parameter(repacked, requires_grad=False)
+
+        # Re-derive output size from the repacked weight for safety.
+        layer.xpu_output_size = out_size
+
+        # --- Transpose scales (out, num_groups) → (num_groups, out) ---
+        # AWQ/oneDNN kernel convention is (groups, out).
         layer.scales = torch.nn.Parameter(
-            layer.weight_scale.data,
-            requires_grad=False,
+            scales.T.contiguous(), requires_grad=False
         )
+
+        # Synthesised scalar zero-point placeholder for symmetric quant.
         layer.qzeros = torch.nn.Parameter(
-            torch.zeros(1, dtype=torch.int8, device=layer.qweight.device),
+            torch.zeros(1, dtype=torch.int8, device=device),
             requires_grad=False,
         )
 
@@ -154,8 +195,8 @@ class CompressedTensorsW4A16XPU(CompressedTensorsScheme):
             transpose_onednn_woq_format(layer, "gptq", is_sym=True)
         except Exception as exc:
             logger.exception(
-                "W4A16 XPU transpose failed for %s (qweight=%s, scales=%s, "
-                "group_size=%s).",
+                "W4A16 XPU transpose failed for %s "
+                "(qweight=%s, scales=%s, group_size=%s).",
                 layer.__class__.__name__,
                 tuple(layer.qweight.shape),
                 tuple(layer.scales.shape),
