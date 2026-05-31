@@ -432,7 +432,60 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
         num_decodes = attn_metadata.num_decodes
         num_decode_tokens = attn_metadata.num_decode_tokens
 
-        if not attn_metadata.is_prefill:
+        spec_verify_eligible = (
+            attn_metadata.is_prefill
+            and num_decodes == 0
+            and 1 < attn_metadata.max_query_len <= 16
+            and attn_metadata.max_seq_len > attn_metadata.max_query_len
+            and N > 0
+            and (N % attn_metadata.max_query_len) == 0
+            and attn_metadata.query_start_loc is not None
+        )
+        if (
+            spec_verify_eligible
+            and attn_metadata.query_start_loc.shape[0]
+            == (N // attn_metadata.max_query_len) + 1
+        ):
+            # Spec-decode K+1 verify path: route uniform continuation
+            # prefills through the decode kernel with synthesized per-token
+            # sequence lengths. This avoids the continuation prefill path's
+            # per-request Python loop and any query_start_loc GPU->CPU syncs
+            # while still attending to the compressed prior KV cache.
+            k_plus_1 = attn_metadata.max_query_len
+            batch_size = N // k_plus_1
+            offsets = torch.arange(
+                k_plus_1,
+                device=device,
+                dtype=attn_metadata.seq_lens.dtype,
+            )
+            synth_seq_lens = (
+                attn_metadata.seq_lens[:batch_size, None] - k_plus_1 + 1
+                + offsets[None, :]
+            ).reshape(-1)
+            synth_block_table = attn_metadata.block_table[
+                :batch_size
+            ].repeat_interleave(k_plus_1, dim=0)
+            attn_out = triton_turboquant_decode_attention(
+                query=q,
+                kv_cache=kv_cache,
+                block_table=synth_block_table,
+                seq_lens=synth_seq_lens,
+                Pi=Pi,
+                centroids=centroids,
+                scale=self.scale,
+                mse_bits=self.tq_config.key_mse_bits,
+                key_packed_size=self.tq_config.key_packed_size,
+                value_quant_bits=self.tq_config.effective_value_quant_bits,
+                key_fp8=self.tq_config.key_fp8,
+                norm_correction=self.tq_config.norm_correction,
+                PiT=PiT,
+                mid_o_buf=getattr(layer, "_tq_mid_o_buf", None),
+                output_buf=getattr(layer, "_tq_output_buf", None),
+                lse_buf=getattr(layer, "_tq_lse_buf", None),
+                buf_holder=layer,
+                max_num_kv_splits=self.max_num_kv_splits,
+            )
+        elif not attn_metadata.is_prefill:
             # Pure decode batch — fast path
             attn_out = self._decode_attention(
                 q, kv_cache, attn_metadata, Pi, centroids, PiT, layer
@@ -875,13 +928,16 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
         mid_o_buf = output_buf = lse_buf = None
         if is_workspace_manager_initialized():
             # output_buf in query dtype — matches the in-kernel fp16 cast in stage2.
-            mid_o_buf, output_buf, lse_buf = (
-                current_workspace_manager().get_simultaneous(
-                    ((B, Hq, S, D + 1), torch.float32),
-                    ((B, Hq, D), query.dtype),
-                    ((B, Hq), torch.float32),
-                )
+            workspace_shapes = (
+                ((B, Hq, S, D + 1), torch.float32),
+                ((B, Hq, D), query.dtype),
+                ((B, Hq), torch.float32),
             )
+            workspace_manager = current_workspace_manager()
+            if workspace_manager.can_get_simultaneous(*workspace_shapes):
+                mid_o_buf, output_buf, lse_buf = (
+                    workspace_manager.get_simultaneous(*workspace_shapes)
+                )
 
         result = triton_turboquant_decode_attention(
             query=query,

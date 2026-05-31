@@ -54,7 +54,7 @@ def fused_grouped_topk(
     elif scoring_func == "softmax":
         # Apply softmax in Python, then use fused kernel
         # TODO: Add support for softmax in kernel
-        scores = torch.softmax(gating_output, dim=-1)
+        scores = torch.softmax(gating_output.float(), dim=-1)
         topk_values, topk_indices = ops.grouped_topk(
             scores,  # pre-computed scores
             num_expert_group,
@@ -111,7 +111,7 @@ def grouped_topk(
     assert hidden_states.size(0) == gating_output.size(0), "Number of tokens mismatch"
 
     if scoring_func == "softmax":
-        scores = torch.softmax(gating_output, dim=-1)
+        scores = torch.softmax(gating_output.float(), dim=-1)
     elif scoring_func == "sigmoid":
         scores = gating_output.sigmoid()
     else:

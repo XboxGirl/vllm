@@ -4,6 +4,7 @@
 import functools
 import gc
 import itertools
+import os
 import threading
 import time
 from collections import defaultdict
@@ -6215,9 +6216,19 @@ class GPUModelRunner(
                         for i, output in enumerate(dummy_encoder_outputs):
                             self.encoder_cache[f"tmp_{i}"] = output
 
-        # Add `is_profile` here to pre-allocate communication buffers
+        # Add `is_profile` here to pre-allocate communication buffers.
+        # Cap the profiled M by default to avoid Dynamo/Triton fake-tensor
+        # shape conflicts in MoE profile runs when operators use large
+        # --max-num-batched-tokens. Runtime batches can still use the full
+        # scheduler limit; this only bounds the synthetic profiling pass.
+        profile_run_cap = int(os.environ.get("VLLM_PROFILE_RUN_MAX_TOKENS", "4096"))
+        profile_num_tokens = (
+            min(self.max_num_tokens, profile_run_cap)
+            if profile_run_cap > 0
+            else self.max_num_tokens
+        )
         hidden_states, last_hidden_states = self._dummy_run(
-            self.max_num_tokens, is_profile=True
+            profile_num_tokens, is_profile=True
         )
         if get_pp_group().is_last_rank:
             if self.is_pooling_model:

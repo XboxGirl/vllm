@@ -3,6 +3,8 @@
 
 import asyncio
 import io
+import json
+import os
 import time
 from collections.abc import AsyncGenerator, AsyncIterator
 from collections.abc import Sequence as GenericSequence
@@ -78,6 +80,170 @@ if TYPE_CHECKING:
     from vllm.entrypoints.serve.render.serving import OpenAIServingRender
 
 logger = init_logger(__name__)
+
+_LONG_CTX_TOOL_REMINDER_MARKER = "[SYSTEM REMINDER — FORMAT REQUIREMENT]"
+
+
+def _env_flag(*names: str) -> bool:
+    return any(
+        os.environ.get(name, "").strip().lower()
+        in ("1", "true", "yes", "y", "on")
+        for name in names
+    )
+
+
+def _long_ctx_tool_threshold_chars() -> int:
+    raw = os.environ.get(
+        "VLLM_LONG_CONTEXT_TOOL_THRESHOLD_CHARS",
+        os.environ.get("GENESIS_P68_P69_LONG_CTX_THRESHOLD_CHARS", "50000"),
+    )
+    try:
+        return max(1000, int(raw))
+    except (TypeError, ValueError):
+        return 50000
+
+
+def _message_content_chars(message: Any) -> int:
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, str):
+        return len(content)
+    if isinstance(content, list):
+        total = 0
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "text":
+                text = part.get("text", "")
+                if isinstance(text, str):
+                    total += len(text)
+        return total
+    return 0
+
+
+def _tool_names_for_reminder(tools: Any) -> list[str]:
+    names: list[str] = []
+    for tool in tools or []:
+        if isinstance(tool, dict):
+            name = (tool.get("function") or {}).get("name")
+        else:
+            fn = getattr(tool, "function", None)
+            name = getattr(fn, "name", None) if fn is not None else None
+        if isinstance(name, str):
+            names.append(name)
+    return names
+
+
+def _build_long_ctx_tool_reminder(tools: Any) -> str:
+    names = _tool_names_for_reminder(tools)
+    names_text = ", ".join(names) if names else "the provided tools"
+    return (
+        "\n\n---\n"
+        f"{_LONG_CTX_TOOL_REMINDER_MARKER}\n"
+        "Use one of these tools by emitting "
+        '`<tool_call>{"name": "...", "arguments": {...}}</tool_call>` '
+        f"markers verbatim. Available tools: {names_text}.\n"
+        "DO NOT respond with plain text. DO NOT emit JSON without the "
+        "`<tool_call>` wrapper. DO NOT emit Python-style function calls. "
+        "DO NOT refuse, claim inability, or fabricate the answer.\n"
+        "Emit ONLY the `<tool_call>...</tool_call>` block.\n"
+        "---"
+    )
+
+
+def _has_xgrammar_incompatible_tool_schema(tools: Any) -> tuple[str, str] | None:
+    from vllm.tool_parsers.utils import tool_schema_xgrammar_unsupported_key
+
+    for tool in tools or []:
+        unsupported_key = tool_schema_xgrammar_unsupported_key(tool)
+        if unsupported_key is None:
+            continue
+        if isinstance(tool, dict):
+            tool_name = (tool.get("function") or {}).get("name")
+        else:
+            fn = getattr(tool, "function", None)
+            tool_name = getattr(fn, "name", None) if fn is not None else None
+        return str(tool_name or "<anonymous>"), unsupported_key
+    return None
+
+
+def _apply_long_context_tool_adherence(request: ChatCompletionRequest) -> None:
+    p68_enabled = _env_flag(
+        "VLLM_LONG_CONTEXT_AUTO_FORCE_TOOL",
+        "GENESIS_ENABLE_P68_AUTO_FORCE_TOOL",
+    )
+    p69_enabled = _env_flag(
+        "VLLM_LONG_CONTEXT_TOOL_REMINDER",
+        "GENESIS_ENABLE_P69_LONG_CTX_TOOL_REMINDER",
+    )
+    if not (p68_enabled or p69_enabled):
+        return
+
+    tools = getattr(request, "tools", None)
+    if not tools or getattr(request, "tool_choice", None) not in (None, "auto"):
+        return
+
+    messages = getattr(request, "messages", None)
+    if not isinstance(messages, list):
+        return
+
+    prompt_chars = sum(_message_content_chars(message) for message in messages)
+    threshold = _long_ctx_tool_threshold_chars()
+    if prompt_chars < threshold:
+        return
+
+    if p68_enabled:
+        force = _env_flag(
+            "VLLM_LONG_CONTEXT_FORCE_TOOL_WITH_INCOMPAT_SCHEMA",
+            "GENESIS_P68_FORCE",
+        )
+        schema_filter_enabled = _env_flag(
+            "VLLM_TOOL_SCHEMA_FILTER_XGRAMMAR",
+            "GENESIS_ENABLE_PN70_TOOL_SCHEMA_FILTER",
+        )
+        incompatible = (
+            None
+            if force or schema_filter_enabled
+            else _has_xgrammar_incompatible_tool_schema(tools)
+        )
+        if incompatible is None:
+            request.tool_choice = "required"
+            logger.warning(
+                "Long-context tool request (%d chars >= %d): upgraded "
+                "tool_choice from auto to required. Disable with "
+                "VLLM_LONG_CONTEXT_AUTO_FORCE_TOOL=0 or raise "
+                "VLLM_LONG_CONTEXT_TOOL_THRESHOLD_CHARS.",
+                prompt_chars,
+                threshold,
+            )
+        else:
+            tool_name, key = incompatible
+            logger.warning(
+                "Long-context tool request (%d chars >= %d): skipped "
+                "tool_choice upgrade because tool %r contains xgrammar-"
+                "unsupported schema key %r. Enable "
+                "VLLM_TOOL_SCHEMA_FILTER_XGRAMMAR=1 to enforce the compatible "
+                "subset, or VLLM_LONG_CONTEXT_FORCE_TOOL_WITH_INCOMPAT_SCHEMA=1 "
+                "to force the upgrade.",
+                prompt_chars,
+                threshold,
+                tool_name,
+                key,
+            )
+
+    if p69_enabled and messages:
+        last = messages[-1]
+        if isinstance(last, dict):
+            content = last.get("content")
+            if (
+                last.get("role") == "user"
+                and isinstance(content, str)
+                and _LONG_CTX_TOOL_REMINDER_MARKER not in content
+            ):
+                last["content"] = content + _build_long_ctx_tool_reminder(tools)
+                logger.info(
+                    "Long-context tool request (%d chars >= %d): appended "
+                    "tool-call format reminder to final user message.",
+                    prompt_chars,
+                    threshold,
+                )
 
 
 class OpenAIServingChat(OpenAIServing):
@@ -237,6 +403,8 @@ class OpenAIServingChat(OpenAIServing):
         request: ChatCompletionRequest,
         raw_request: Request | None = None,
     ) -> AsyncGenerator[str, None] | ChatCompletionResponse | ErrorResponse:
+        _apply_long_context_tool_adherence(request)
+
         # Streaming response
         tokenizer = self.renderer.tokenizer
         assert tokenizer is not None
@@ -813,6 +981,72 @@ class OpenAIServingChat(OpenAIServing):
                         # finish_reason='error' indicates a retryable error
                         self._raise_if_error(output.finish_reason, request_id)
 
+                        # check to make sure we haven't "forgotten" to stream
+                        #   any tokens that were generated but previously
+                        #   matched by partial json parsing
+                        # only happens if we are NOT using structured outputs
+                        index = 0
+                        auto_tools_called = False
+                        if tool_parser:
+                            auto_tools_called = len(tool_parser.prev_tool_call_arr) > 0
+                            index = (
+                                len(tool_parser.prev_tool_call_arr) - 1
+                                if auto_tools_called
+                                else 0
+                            )
+                        should_check = (
+                            self._should_check_for_unstreamed_tool_arg_tokens(
+                                delta_message, output
+                            )
+                        )
+                        # only check if there are any tool calls
+                        # detected by partial parsing
+                        if should_check and tool_parser and auto_tools_called:
+                            latest_delta_len = 0
+                            if (
+                                delta_message.tool_calls
+                                and isinstance(
+                                    delta_message.tool_calls[0].function,
+                                    DeltaFunctionCall,
+                                )
+                            ) and isinstance(
+                                delta_message.tool_calls[0].function.arguments, str
+                            ):
+                                latest_delta_len = len(
+                                    delta_message.tool_calls[0].function.arguments
+                                )
+
+                            # get the expected call based on partial JSON
+                            # parsing which "autocompletes" the JSON.
+                            # Tool parsers (e.g. Qwen3Coder) store
+                            # arguments as a JSON string in
+                            # prev_tool_call_arr. Calling json.dumps()
+                            # on an already-serialized string would
+                            # double-serialize it (e.g. '{"k":1}' becomes
+                            # '"{\"k\":1}"'), which then causes the
+                            # replace() below to fail and append the
+                            # entire double-serialized string as a
+                            # spurious final delta.
+                            args = tool_parser.prev_tool_call_arr[index].get(
+                                "arguments", {}
+                            )
+                            if isinstance(args, str):
+                                expected_call = args
+                            else:
+                                expected_call = json.dumps(args, ensure_ascii=False)
+
+                            # get what we've streamed so far for arguments
+                            # for the current tool
+                            actual_call = tool_parser.streamed_args_for_tool[index]
+                            if latest_delta_len > 0:
+                                actual_call = actual_call[:-latest_delta_len]
+
+                            # check to see if there's anything left to stream
+                            remaining_call = expected_call.replace(actual_call, "", 1)
+                            # set that as a delta message
+                            delta_message = self._create_remaining_args_delta(
+                                delta_message, remaining_call, index
+                            )
                         # Send the finish response for each request.n only once
                         # In OpenAI's API, when a tool is called, the
                         # finish_reason is:
@@ -825,6 +1059,26 @@ class OpenAIServingChat(OpenAIServing):
                         else:
                             finish_reason_ = (
                                 output.finish_reason if output.finish_reason else "stop"
+                            )
+                        if (
+                            finish_reason_ == "stop"
+                            and request.tools
+                            and not tools_streamed[i]
+                            and not auto_tools_called
+                            and reasoning_parser is not None
+                            and delta_message is not None
+                            and not delta_message.content
+                            and not delta_message.tool_calls
+                        ):
+                            logger.warning(
+                                "MTP truncation detected for request %s: "
+                                "finished with 'stop' but tools were configured "
+                                "and no content/tool calls were streamed.",
+                                request_id,
+                            )
+                            raise GenerationError(
+                                "MTP speculative decoding truncated tool call "
+                                "generation. Please retry."
                             )
                         choice_data = ChatCompletionResponseStreamChoice(
                             index=i,
@@ -1467,3 +1721,51 @@ class OpenAIServingChat(OpenAIServing):
             and self.enable_auto_tools
             and request.tool_choice in ["auto", None]
         )
+
+    def _should_check_for_unstreamed_tool_arg_tokens(
+        self,
+        delta_message: DeltaMessage | None,
+        output: CompletionOutput,
+    ) -> bool:
+        """
+        Check to see if we should check for unstreamed tool arguments tokens.
+        This is only applicable when auto tool parsing is enabled and the
+        generation is finishing. Some speculative decoding paths finish with
+        no tool_calls in the final delta even though the parser has partially
+        streamed a tool call; the caller verifies that parser state exists
+        before using this signal.
+        """
+
+        return bool(
+            # if there is a delta message that includes tool calls which
+            # include a function that has arguments
+            output.finish_reason is not None
+            and self.enable_auto_tools
+            and self.tool_parser
+        )
+
+    @staticmethod
+    def _create_remaining_args_delta(
+        delta_message: DeltaMessage,
+        remaining_call: str,
+        index: int,
+    ) -> DeltaMessage:
+        """
+        Create a delta message for remaining tool arguments, preserving
+        id/type/name from the original delta.
+        """
+        original_tc = next(
+            (tc for tc in delta_message.tool_calls if tc.index == index),
+            None,
+        )
+        original_fn = original_tc.function if original_tc else None
+        delta_fn = DeltaFunctionCall(arguments=remaining_call)
+        if original_fn and original_fn.name is not None:
+            delta_fn.name = original_fn.name
+
+        tool_call = DeltaToolCall(index=index, function=delta_fn)
+        if original_tc and original_tc.id is not None:
+            tool_call.id = original_tc.id
+        if original_tc and original_tc.type is not None:
+            tool_call.type = original_tc.type
+        return DeltaMessage(tool_calls=[tool_call])

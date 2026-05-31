@@ -62,6 +62,7 @@ from vllm.model_executor.parameter import (
 from vllm.scalar_type import scalar_types
 from vllm.transformers_utils.config import get_safetensors_params_metadata
 from vllm.utils.collection_utils import is_list_of
+from vllm.utils.math_utils import cdiv
 
 logger = init_logger(__name__)
 
@@ -366,12 +367,12 @@ class AutoGPTQLinearMethod(LinearMethodBase):
             # By setting scale_dim == None, weight_loader will
             # repeat the scales on each GPU in TP>1 case.
             scales_and_zp_input_dim = None
-            scales_and_zp_size = input_size // group_size
+            scales_and_zp_size = cdiv(input_size, group_size)
         else:
             # By setting scale_dim == 0, weight_loader will
             # shard the scales in TP>1 case.
             scales_and_zp_input_dim = 0
-            scales_and_zp_size = input_size_per_partition // group_size
+            scales_and_zp_size = cdiv(input_size_per_partition, group_size)
 
         # Quantized weights
         qweight = PackedvLLMParameter(
@@ -433,6 +434,20 @@ class AutoGPTQLinearMethod(LinearMethodBase):
                 packed_dim=1,
                 packed_factor=self.quant_config.pack_factor,
                 **qzeros_args,
+            )
+            set_weight_attrs(
+                scales,
+                {
+                    "row_group_size": group_size,
+                    "row_input_size_per_partition": input_size_per_partition,
+                },
+            )
+            set_weight_attrs(
+                qzeros,
+                {
+                    "row_group_size": group_size,
+                    "row_input_size_per_partition": input_size_per_partition,
+                },
             )
 
         layer.register_parameter("qweight", qweight)
