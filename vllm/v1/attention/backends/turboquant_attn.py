@@ -794,13 +794,47 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
         # Reuse cached buffers to avoid per-call allocation (~16MB at 8K).
         alloc_len = math.ceil(cached_len / block_size) * block_size
         buf_shape = (1, Hk, alloc_len, D)
-        # Use WorkspaceManager for dequant buffers.
-        # Shared across all layers — saves 60× memory at long context.
-        # Required for CUDA Graph capture (per-layer growth incompatible with CG).
-        k_buf, v_buf = current_workspace_manager().get_simultaneous(
+        workspace_shapes = (
             (buf_shape, torch.float16),
             (buf_shape, torch.float16),
         )
+        # Prefer the shared workspace when warmup already reserved enough
+        # capacity. Large continuation-prefill shapes may first appear after
+        # the workspace is locked, so fall back instead of forcing growth.
+        k_buf = v_buf = None
+        if is_workspace_manager_initialized():
+            workspace_manager = current_workspace_manager()
+            if workspace_manager.can_get_simultaneous(*workspace_shapes):
+                k_buf, v_buf = workspace_manager.get_simultaneous(
+                    *workspace_shapes
+                )
+
+        if k_buf is None or v_buf is None:
+            holder = layer if layer is not None else self
+            k_buf = getattr(holder, "_tq_k_dequant_buf", None)
+            v_buf = getattr(holder, "_tq_v_dequant_buf", None)
+            if (
+                k_buf is None
+                or v_buf is None
+                or k_buf.ndim != 4
+                or v_buf.ndim != 4
+                or k_buf.shape[0] < 1
+                or k_buf.shape[1] < Hk
+                or k_buf.shape[2] < alloc_len
+                or k_buf.shape[3] < D
+                or v_buf.shape[0] < 1
+                or v_buf.shape[1] < Hk
+                or v_buf.shape[2] < alloc_len
+                or v_buf.shape[3] < D
+                or k_buf.dtype != torch.float16
+                or v_buf.dtype != torch.float16
+                or k_buf.device != device
+                or v_buf.device != device
+            ):
+                k_buf = torch.empty(buf_shape, dtype=torch.float16, device=device)
+                v_buf = torch.empty(buf_shape, dtype=torch.float16, device=device)
+                holder._tq_k_dequant_buf = k_buf
+                holder._tq_v_dequant_buf = v_buf
         # Skip .zero_() — kernel writes all positions up to cached_len,
         # and we only read [:cached_len] afterwards.
         k_cached = k_buf[:, :, :alloc_len, :]
