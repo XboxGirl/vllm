@@ -5,6 +5,7 @@ import inspect
 import os
 from itertools import accumulate
 from math import prod
+from typing import cast
 
 import torch
 
@@ -116,6 +117,28 @@ class WorkspaceManager:
             for i in range(len(shapes_and_dtypes))
         ]
 
+    def can_get_simultaneous(
+        self, *shapes_and_dtypes: tuple[tuple[int, ...], torch.dtype]
+    ) -> bool:
+        """Check whether get_simultaneous can run without lock violation.
+
+        Returns True when the workspace is unlocked, because an unlocked
+        workspace is allowed to grow. When locked, returns True only if the
+        current ubatch workspace is already large enough for the requested
+        simultaneous views.
+        """
+        if not self._locked:
+            return True
+
+        total_bytes = sum(
+            round_up(_compute_bytes(shape, dtype), 256)
+            for shape, dtype in shapes_and_dtypes
+        )
+        ubatch_id = dbo_current_ubatch_id()
+        current_workspace = self._current_workspaces[ubatch_id]
+        current_size = self._workspace_size_bytes(current_workspace)
+        return current_size >= total_bytes
+
     def _ensure_workspace_size(self, required_bytes: int) -> torch.Tensor:
         """Ensure workspace is allocated and large enough, return current workspace.
 
@@ -188,7 +211,7 @@ class WorkspaceManager:
                     ubatch_id,
                 )
 
-        return current_workspace
+        return cast(torch.Tensor, current_workspace)
 
 
 def is_workspace_manager_initialized() -> bool:

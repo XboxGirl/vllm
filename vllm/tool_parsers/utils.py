@@ -3,6 +3,7 @@
 
 import ast
 import json
+import os
 import warnings
 from json import JSONDecodeError, JSONDecoder
 from typing import Any, TypeAlias
@@ -30,6 +31,120 @@ from vllm.logger import init_logger
 Tool: TypeAlias = ChatCompletionToolsParam | ResponsesTool
 
 logger = init_logger(__name__)
+
+_XGRAMMAR_UNSUPPORTED_SCHEMA_KEYS = frozenset({
+    "patternProperties",
+    "propertyNames",
+    "$ref",
+    "$defs",
+    "definitions",
+    "oneOf",
+    "not",
+    "if",
+    "then",
+    "else",
+    "dependentRequired",
+    "dependentSchemas",
+    "unevaluatedProperties",
+    "unevaluatedItems",
+    "contentSchema",
+    "contentEncoding",
+    "contentMediaType",
+})
+
+
+def _env_flag(*names: str) -> bool:
+    return any(
+        os.environ.get(name, "").strip().lower()
+        in ("1", "true", "yes", "y", "on")
+        for name in names
+    )
+
+
+def _scan_schema_for_xgrammar_unsupported_key(
+    schema: Any, depth: int = 0
+) -> str | None:
+    if depth > 16:
+        return None
+    if isinstance(schema, dict):
+        for key in schema:
+            if key in _XGRAMMAR_UNSUPPORTED_SCHEMA_KEYS:
+                return key
+        for value in schema.values():
+            found = _scan_schema_for_xgrammar_unsupported_key(value, depth + 1)
+            if found is not None:
+                return found
+    elif isinstance(schema, list):
+        for value in schema:
+            found = _scan_schema_for_xgrammar_unsupported_key(value, depth + 1)
+            if found is not None:
+                return found
+    return None
+
+
+def tool_schema_xgrammar_unsupported_key(tool: Any) -> str | None:
+    """Return the first xgrammar-unsupported schema key for a tool."""
+    if isinstance(tool, dict):
+        params = (tool.get("function") or {}).get("parameters")
+        if params is None:
+            return None
+        return _scan_schema_for_xgrammar_unsupported_key(params)
+    try:
+        _, params = _extract_tool_info(tool)
+    except Exception:
+        return None
+    if params is None:
+        return None
+    return _scan_schema_for_xgrammar_unsupported_key(params)
+
+
+def _tool_name(tool: Any) -> str:
+    if isinstance(tool, dict):
+        return (tool.get("function") or {}).get("name") or "<anonymous>"
+    try:
+        name, _ = _extract_tool_info(tool)
+        return name
+    except Exception:
+        return "<anonymous>"
+
+
+def _get_xgrammar_compatible_tool_subset(tools: list[Tool]) -> list[Tool] | None:
+    if not _env_flag(
+        "VLLM_TOOL_SCHEMA_FILTER_XGRAMMAR",
+        "GENESIS_ENABLE_PN70_TOOL_SCHEMA_FILTER",
+    ):
+        return tools
+
+    compat: list[Tool] = []
+    filtered: list[tuple[str, str]] = []
+    for tool in tools:
+        unsupported_key = tool_schema_xgrammar_unsupported_key(tool)
+        if unsupported_key is None:
+            compat.append(tool)
+        else:
+            filtered.append((_tool_name(tool), unsupported_key))
+
+    if not filtered:
+        return tools
+    if not compat:
+        logger.warning(
+            "All %d tools have xgrammar-unsupported schema keys; skipping "
+            "combined schema enforcement. Filtered tools: %s",
+            len(tools),
+            filtered,
+        )
+        return None
+
+    logger.warning(
+        "Filtered %d/%d xgrammar-incompatible tools from required combined "
+        "schema. Grammar enforcement remains active for %d compatible tools. "
+        "Filtered tools: %s",
+        len(filtered),
+        len(tools),
+        len(compat),
+        filtered,
+    )
+    return compat
 
 
 def safe_literal_eval(text: str):
@@ -255,7 +370,10 @@ def get_json_schema_from_tools(
         return tool_map[tool_name].function.parameters
     # tool_choice: "required"
     if tool_choice == "required":
-        return _get_json_schema_from_tools(tools)
+        compat_tools = _get_xgrammar_compatible_tool_subset(tools)
+        if compat_tools is None:
+            return None
+        return _get_json_schema_from_tools(compat_tools)
     # tool_choice: "auto"
     return None
 

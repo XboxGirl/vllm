@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from vllm.entrypoints.openai.engine.protocol import DeltaMessage
 from vllm.reasoning.basic_parsers import BaseThinkingReasoningParser
+from vllm.tool_parsers.utils import partial_tag_overlap
 
 if TYPE_CHECKING:
     from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
@@ -106,9 +107,7 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
             self._tool_call_token_id is not None
             and self._tool_call_token_id in input_ids
         ):
-            tool_call_index = (
-                len(input_ids) - 1 - input_ids[::-1].index(self._tool_call_token_id)
-            )
+            tool_call_index = input_ids.index(self._tool_call_token_id)
             return input_ids[tool_call_index:]
         return []
 
@@ -227,5 +226,11 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
         ):
             return DeltaMessage(content=delta_text)
         else:
+            overlap = partial_tag_overlap(current_text, self._tool_call_tag)
+            if overlap > 0:
+                send_len = len(delta_text) - overlap
+                if send_len > 0:
+                    return DeltaMessage(reasoning=delta_text[:send_len])
+                return DeltaMessage()
             # No end token yet: still in reasoning phase.
             return DeltaMessage(reasoning=delta_text)

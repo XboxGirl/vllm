@@ -35,6 +35,27 @@ from vllm.utils.torch_utils import direct_register_custom_op
 logger = init_logger(__name__)
 
 
+def _apply_moe_tuning_overrides(config: dict[str, int]) -> dict[str, int]:
+    """Apply optional fused-MoE Triton launch overrides from env vars."""
+    for key, env_names in (
+        ("num_warps", ("VLLM_FUSED_MOE_NUM_WARPS", "GENESIS_MOE_NUM_WARPS")),
+        ("num_stages", ("VLLM_FUSED_MOE_NUM_STAGES", "GENESIS_MOE_NUM_STAGES")),
+    ):
+        for env_name in env_names:
+            value = os.environ.get(env_name)
+            if value:
+                try:
+                    config[key] = int(value)
+                except ValueError:
+                    logger.warning(
+                        "Ignoring invalid %s=%r for fused-MoE tuning override",
+                        env_name,
+                        value,
+                    )
+                break
+    return config
+
+
 @triton.jit
 def write_zeros_to_output(
     c_ptr,
@@ -1297,7 +1318,7 @@ def get_default_config(
             "num_warps": num_warps,
             "num_stages": num_stages,
         }
-    return config
+    return _apply_moe_tuning_overrides(config)
 
 
 def try_get_optimal_moe_config(

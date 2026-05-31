@@ -529,10 +529,16 @@ def triton_turboquant_decode_attention(
 
     NUM_KV_SPLITS = max_num_kv_splits
 
+    if mid_o_buf is None and buf_holder is not None:
+        mid_o_buf = getattr(buf_holder, "_tq_mid_o_buf", None)
     if (
         mid_o_buf is not None
         and mid_o_buf.shape[0] >= B
+        and mid_o_buf.shape[1] >= Hq
         and mid_o_buf.shape[2] >= NUM_KV_SPLITS
+        and mid_o_buf.shape[3] >= D + 1
+        and mid_o_buf.dtype == torch.float32
+        and mid_o_buf.device == device
     ):
         mid_o = mid_o_buf[:B, :Hq, :NUM_KV_SPLITS, :]
     else:
@@ -590,17 +596,30 @@ def triton_turboquant_decode_attention(
     # Stage 2: Reduce across KV splits
     # Output in query dtype — eliminates float16_copy kernel after stage2
     out_dtype = query.dtype
+    if output_buf is None and buf_holder is not None:
+        output_buf = getattr(buf_holder, "_tq_output_buf", None)
     if (
         output_buf is not None
         and output_buf.shape[0] >= B
+        and output_buf.shape[1] >= Hq
+        and output_buf.shape[2] >= D
         and output_buf.dtype == out_dtype
+        and output_buf.device == device
     ):
         output = output_buf[:B, :Hq, :D]
     else:
         output = torch.empty(B, Hq, D, dtype=out_dtype, device=device)
         if buf_holder is not None:
             buf_holder._tq_output_buf = output
-    if lse_buf is not None and lse_buf.shape[0] >= B:
+    if lse_buf is None and buf_holder is not None:
+        lse_buf = getattr(buf_holder, "_tq_lse_buf", None)
+    if (
+        lse_buf is not None
+        and lse_buf.shape[0] >= B
+        and lse_buf.shape[1] >= Hq
+        and lse_buf.dtype == torch.float32
+        and lse_buf.device == device
+    ):
         lse = lse_buf[:B, :Hq]
     else:
         lse = torch.empty(B, Hq, dtype=torch.float32, device=device)

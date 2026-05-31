@@ -844,19 +844,41 @@ class Qwen3_VisionTransformer(nn.Module):
         loaded_params: set[str] = set()
 
         for name, loaded_weight in weights:
+            skipped_weight = False
             for param_name, weight_name, shard_id in stacked_params_mapping:
                 if weight_name not in name:
                     continue
                 name = name.replace(weight_name, param_name)
 
+                if name not in params_dict:
+                    logger.warning_once(
+                        "Skipping unknown Qwen3-VL vision weight %s. If this "
+                        "checkpoint intentionally strips the visual tower, "
+                        "serve it with --language-model-only for a clean "
+                        "text-only load.",
+                        name,
+                    )
+                    skipped_weight = True
+                    break
                 param = params_dict[name]
                 weight_loader = param.weight_loader
                 weight_loader(param, loaded_weight, shard_id)
                 break
             else:
+                if name not in params_dict:
+                    logger.warning_once(
+                        "Skipping unknown Qwen3-VL vision weight %s. If this "
+                        "checkpoint intentionally strips the visual tower, "
+                        "serve it with --language-model-only for a clean "
+                        "text-only load.",
+                        name,
+                    )
+                    continue
                 param = params_dict[name]
                 weight_loader = getattr(param, "weight_loader", default_weight_loader)
                 weight_loader(param, loaded_weight)
+            if skipped_weight:
+                continue
             loaded_params.add(name)
         return loaded_params
 

@@ -9,7 +9,10 @@ We solve the Lloyd-Max conditions to find optimal centroids.
 Based on: turboquant-pytorch/lloyd_max.py (Zandieh et al.)
 """
 
+import json
 import math
+import os
+import tempfile
 from functools import lru_cache
 
 import torch
@@ -79,8 +82,88 @@ def solve_lloyd_max(
     )
 
 
+_CENTROIDS_DISK_CACHE: dict[tuple[int, int], tuple[float, ...]] | None = None
+
+
+def _centroids_cache_path() -> str:
+    return os.environ.get(
+        "VLLM_TURBOQUANT_CENTROIDS_CACHE",
+        os.path.expanduser("~/.cache/vllm/turboquant_centroids.json"),
+    )
+
+
+def _encode_centroids_key(key: tuple[int, int]) -> str:
+    return f"{key[0]}:{key[1]}"
+
+
+def _decode_centroids_key(key: str) -> tuple[int, int] | None:
+    try:
+        d_str, bits_str = key.split(":", 1)
+        return int(d_str), int(bits_str)
+    except Exception:
+        return None
+
+
+def _load_centroids_disk_cache() -> dict[tuple[int, int], tuple[float, ...]]:
+    global _CENTROIDS_DISK_CACHE
+    if _CENTROIDS_DISK_CACHE is not None:
+        return _CENTROIDS_DISK_CACHE
+    path = _centroids_cache_path()
+    try:
+        if os.path.isfile(path):
+            with open(path, encoding="utf-8") as f:
+                raw_cache = json.load(f)
+            cache: dict[tuple[int, int], tuple[float, ...]] = {}
+            if isinstance(raw_cache, dict):
+                for raw_key, raw_values in raw_cache.items():
+                    key = _decode_centroids_key(str(raw_key))
+                    if key is not None and isinstance(raw_values, list):
+                        cache[key] = tuple(float(x) for x in raw_values)
+            _CENTROIDS_DISK_CACHE = cache
+        else:
+            _CENTROIDS_DISK_CACHE = {}
+    except Exception:
+        _CENTROIDS_DISK_CACHE = {}
+    return _CENTROIDS_DISK_CACHE
+
+
+def _save_centroids_disk_cache() -> None:
+    if _CENTROIDS_DISK_CACHE is None:
+        return
+    path = _centroids_cache_path()
+    try:
+        cache_dir = os.path.dirname(path)
+        if cache_dir:
+            os.makedirs(cache_dir, exist_ok=True)
+        serializable_cache = {
+            _encode_centroids_key(key): list(values)
+            for key, values in _CENTROIDS_DISK_CACHE.items()
+        }
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=cache_dir or None, delete=False
+        ) as tmp_file:
+            json.dump(serializable_cache, tmp_file)
+            tmp_name = tmp_file.name
+        os.replace(tmp_name, path)
+    except Exception:
+        pass
+
+
 @lru_cache(maxsize=32)
 def get_centroids(d: int, bits: int) -> torch.Tensor:
-    """Get precomputed Lloyd-Max centroids (cached)."""
+    """Get precomputed Lloyd-Max centroids (memory and disk cached)."""
+    key = (int(d), int(bits))
+    disk_cache = _load_centroids_disk_cache()
+    if key in disk_cache:
+        try:
+            return torch.tensor(disk_cache[key], dtype=torch.float32)
+        except Exception:
+            pass
+
     centroids, _ = solve_lloyd_max(d, bits)
+    try:
+        disk_cache[key] = tuple(float(x) for x in centroids.cpu().tolist())
+        _save_centroids_disk_cache()
+    except Exception:
+        pass
     return centroids
