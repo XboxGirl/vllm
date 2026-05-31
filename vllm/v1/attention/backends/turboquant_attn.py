@@ -68,6 +68,64 @@ if _HAS_FLASH_ATTN:
 # per continuation, eliminating the O(N²/chunk_size) collapse at long context.
 _CONTINUATION_DECODE_THRESHOLD = 128
 
+_TQ_CONTINUATION_FALLBACK_BUFFERS: dict[
+    tuple[str, int | None, int, int, torch.dtype],
+    tuple[torch.Tensor, torch.Tensor],
+] = {}
+
+
+def _fallback_device_index(device: torch.device) -> int | None:
+    if device.type == "cuda" and device.index is None:
+        return torch.cuda.current_device()
+    return device.index
+
+
+def _get_tq_continuation_fallback_buffers(
+    buf_shape: tuple[int, int, int, int],
+    dtype: torch.dtype,
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Get shared late-fallback dequant buffers for continuation prefill.
+
+    Layers execute sequentially in the model runner, so a single reusable K/V
+    pair per device/head-layout is sufficient. This avoids retaining one large
+    long-context dequant buffer pair per layer when a runtime continuation shape
+    was not covered by workspace warmup before the workspace was locked.
+    """
+    _, num_kv_heads, alloc_len, head_size = buf_shape
+    key = (
+        device.type,
+        _fallback_device_index(device),
+        num_kv_heads,
+        head_size,
+        dtype,
+    )
+    buffers = _TQ_CONTINUATION_FALLBACK_BUFFERS.get(key)
+    if buffers is not None:
+        k_buf, v_buf = buffers
+        if (
+            k_buf.ndim == 4
+            and v_buf.ndim == 4
+            and k_buf.shape[0] >= 1
+            and k_buf.shape[1] >= num_kv_heads
+            and k_buf.shape[2] >= alloc_len
+            and k_buf.shape[3] >= head_size
+            and v_buf.shape[0] >= 1
+            and v_buf.shape[1] >= num_kv_heads
+            and v_buf.shape[2] >= alloc_len
+            and v_buf.shape[3] >= head_size
+            and k_buf.dtype == dtype
+            and v_buf.dtype == dtype
+            and k_buf.device == device
+            and v_buf.device == device
+        ):
+            return k_buf, v_buf
+
+    k_buf = torch.empty(buf_shape, dtype=dtype, device=device)
+    v_buf = torch.empty(buf_shape, dtype=dtype, device=device)
+    _TQ_CONTINUATION_FALLBACK_BUFFERS[key] = (k_buf, v_buf)
+    return k_buf, v_buf
+
 
 def _build_hadamard(d: int, device_str: str) -> torch.Tensor:
     """Orthonormal Hadamard matrix (Sylvester construction), cached per (d, device).
@@ -810,31 +868,9 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
                 )
 
         if k_buf is None or v_buf is None:
-            holder = layer if layer is not None else self
-            k_buf = getattr(holder, "_tq_k_dequant_buf", None)
-            v_buf = getattr(holder, "_tq_v_dequant_buf", None)
-            if (
-                k_buf is None
-                or v_buf is None
-                or k_buf.ndim != 4
-                or v_buf.ndim != 4
-                or k_buf.shape[0] < 1
-                or k_buf.shape[1] < Hk
-                or k_buf.shape[2] < alloc_len
-                or k_buf.shape[3] < D
-                or v_buf.shape[0] < 1
-                or v_buf.shape[1] < Hk
-                or v_buf.shape[2] < alloc_len
-                or v_buf.shape[3] < D
-                or k_buf.dtype != torch.float16
-                or v_buf.dtype != torch.float16
-                or k_buf.device != device
-                or v_buf.device != device
-            ):
-                k_buf = torch.empty(buf_shape, dtype=torch.float16, device=device)
-                v_buf = torch.empty(buf_shape, dtype=torch.float16, device=device)
-                holder._tq_k_dequant_buf = k_buf
-                holder._tq_v_dequant_buf = v_buf
+            k_buf, v_buf = _get_tq_continuation_fallback_buffers(
+                buf_shape, torch.float16, device
+            )
         # Skip .zero_() — kernel writes all positions up to cached_len,
         # and we only read [:cached_len] afterwards.
         k_cached = k_buf[:, :, :alloc_len, :]
