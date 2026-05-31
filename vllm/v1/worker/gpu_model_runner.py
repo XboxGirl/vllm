@@ -4,7 +4,6 @@
 import functools
 import gc
 import itertools
-import os
 import threading
 import time
 from collections import defaultdict
@@ -6230,7 +6229,7 @@ class GPUModelRunner(
         # shape conflicts in MoE profile runs when operators use large
         # --max-num-batched-tokens. Runtime batches can still use the full
         # scheduler limit; this only bounds the synthetic profiling pass.
-        profile_run_cap = int(os.environ.get("VLLM_PROFILE_RUN_MAX_TOKENS", "4096"))
+        profile_run_cap = envs.VLLM_PROFILE_RUN_MAX_TOKENS
         profile_num_tokens = (
             min(self.max_num_tokens, profile_run_cap)
             if profile_run_cap > 0
