@@ -72,6 +72,10 @@ _TQ_CONTINUATION_FALLBACK_BUFFERS: dict[
     tuple[str, int | None, int, int, torch.dtype],
     tuple[torch.Tensor, torch.Tensor],
 ] = {}
+_TQ_CONTINUATION_FULL_BUFFERS: dict[
+    tuple[str, int | None, int, int, torch.dtype],
+    tuple[torch.Tensor, torch.Tensor],
+] = {}
 
 
 def _fallback_device_index(device: torch.device) -> int | None:
@@ -125,6 +129,76 @@ def _get_tq_continuation_fallback_buffers(
     v_buf = torch.empty(buf_shape, dtype=dtype, device=device)
     _TQ_CONTINUATION_FALLBACK_BUFFERS[key] = (k_buf, v_buf)
     return k_buf, v_buf
+
+
+def _get_tq_continuation_full_buffers(
+    buf_shape: tuple[int, int, int],
+    dtype: torch.dtype,
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Get shared full K/V buffers used by large continuation prefill."""
+    seq_len, num_kv_heads, head_size = buf_shape
+    key = (
+        device.type,
+        _fallback_device_index(device),
+        num_kv_heads,
+        head_size,
+        dtype,
+    )
+    buffers = _TQ_CONTINUATION_FULL_BUFFERS.get(key)
+    if buffers is not None:
+        k_buf, v_buf = buffers
+        if (
+            k_buf.ndim == 3
+            and v_buf.ndim == 3
+            and k_buf.shape[0] >= seq_len
+            and k_buf.shape[1] >= num_kv_heads
+            and k_buf.shape[2] >= head_size
+            and v_buf.shape[0] >= seq_len
+            and v_buf.shape[1] >= num_kv_heads
+            and v_buf.shape[2] >= head_size
+            and k_buf.dtype == dtype
+            and v_buf.dtype == dtype
+            and k_buf.device == device
+            and v_buf.device == device
+        ):
+            return k_buf, v_buf
+
+    k_buf = torch.empty(buf_shape, dtype=dtype, device=device)
+    v_buf = torch.empty(buf_shape, dtype=dtype, device=device)
+    _TQ_CONTINUATION_FULL_BUFFERS[key] = (k_buf, v_buf)
+    return k_buf, v_buf
+
+
+def reserve_tq_continuation_buffers(
+    max_seq_len: int,
+    block_size: int,
+    num_kv_heads: int,
+    head_size: int,
+    dtype: torch.dtype,
+    device: torch.device,
+) -> int:
+    """Reserve worst-case TurboQuant continuation scratch buffers.
+
+    Reserving during memory profiling makes this scratch visible to vLLM's
+    memory budget calculation, so later large-context requests do not allocate
+    it outside the configured ``--gpu-memory-utilization`` envelope.
+    """
+    if max_seq_len <= _CONTINUATION_DECODE_THRESHOLD:
+        return 0
+    alloc_len = math.ceil(max_seq_len / block_size) * block_size
+    dequant_shape = (1, num_kv_heads, alloc_len, head_size)
+    full_shape = (max_seq_len, num_kv_heads, head_size)
+    dequant_k, dequant_v = _get_tq_continuation_fallback_buffers(
+        dequant_shape, torch.float16, device
+    )
+    full_k, full_v = _get_tq_continuation_full_buffers(full_shape, dtype, device)
+    return dequant_k.nbytes + dequant_v.nbytes + full_k.nbytes + full_v.nbytes
+
+
+def clear_tq_continuation_buffers() -> None:
+    _TQ_CONTINUATION_FALLBACK_BUFFERS.clear()
+    _TQ_CONTINUATION_FULL_BUFFERS.clear()
 
 
 def _build_hadamard(d: int, device_str: str) -> torch.Tensor:
@@ -928,8 +1002,11 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
         # Concatenate cached + current chunk K/V (match query dtype)
         # Pre-allocate full K/V buffer, copy into slices (no cat alloc)
         qdtype = query.dtype
-        k_full = torch.empty(seq_len, Hk, D, dtype=qdtype, device=device)
-        v_full = torch.empty(seq_len, Hk, D, dtype=qdtype, device=device)
+        k_full_buf, v_full_buf = _get_tq_continuation_full_buffers(
+            (seq_len, Hk, D), qdtype, device
+        )
+        k_full = k_full_buf[:seq_len, :Hk, :D]
+        v_full = v_full_buf[:seq_len, :Hk, :D]
         k_full[:cached_len] = k_cached_trim.to(qdtype)
         k_full[cached_len:] = key_chunk
         v_full[:cached_len] = v_cached_trim.to(qdtype)

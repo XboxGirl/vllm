@@ -6215,6 +6215,8 @@ class GPUModelRunner(
                         for i, output in enumerate(dummy_encoder_outputs):
                             self.encoder_cache[f"tmp_{i}"] = output
 
+        self._reserve_turboquant_continuation_buffers()
+
         # Add `is_profile` here to pre-allocate communication buffers.
         # Cap the profiled M by default to avoid Dynamo/Triton fake-tensor
         # shape conflicts in MoE profile runs when operators use large
@@ -6240,6 +6242,62 @@ class GPUModelRunner(
         del hidden_states, output
         self.encoder_cache.clear()
         gc.collect()
+
+    def _reserve_turboquant_continuation_buffers(self) -> None:
+        """Reserve TurboQuant long-context scratch during memory profiling.
+
+        TurboQuant large continuation prefill needs dequantized K/V scratch and
+        full K/V scratch whose size is driven by max_model_len. Reserving the
+        shared scratch here makes it part of the profiled non-KV memory, so the
+        KV cache allocator respects --gpu-memory-utilization instead of seeing
+        the scratch first appear during a real long-context request.
+        """
+        if not str(self.cache_config.cache_dtype).startswith("turboquant_"):
+            return
+
+        from vllm.v1.attention.backends.turboquant_attn import (
+            reserve_tq_continuation_buffers,
+        )
+
+        block_size = self.cache_config.block_size
+        reserved_bytes = 0
+        seen_layouts: set[tuple[int, int, torch.dtype]] = set()
+        attn_layers = get_layers_from_vllm_config(self.vllm_config, Attention)
+        for attn_module in attn_layers.values():
+            if not attn_module.kv_cache_dtype.startswith("turboquant_"):
+                continue
+            layout = (
+                attn_module.num_kv_heads,
+                attn_module.head_size,
+                self.dtype,
+            )
+            if layout in seen_layouts:
+                continue
+            seen_layouts.add(layout)
+            try:
+                reserved_bytes += reserve_tq_continuation_buffers(
+                    max_seq_len=self.max_model_len,
+                    block_size=block_size,
+                    num_kv_heads=attn_module.num_kv_heads,
+                    head_size=attn_module.head_size,
+                    dtype=self.dtype,
+                    device=self.device,
+                )
+            except torch.OutOfMemoryError as e:
+                raise RuntimeError(
+                    "Insufficient GPU memory to reserve worst-case TurboQuant "
+                    "continuation scratch during profiling. Try lowering "
+                    "--max-model-len or --max-num-seqs, lowering "
+                    "--gpu-memory-utilization to leave more non-KV headroom, "
+                    "or using a non-TurboQuant KV cache dtype."
+                ) from e
+
+        if reserved_bytes > 0:
+            logger.info_once(
+                "Reserved %.2f GiB for TurboQuant continuation scratch "
+                "during memory profiling.",
+                reserved_bytes / (1 << 30),
+            )
 
     def _init_minimal_kv_cache_for_profiling(self) -> None:
         from vllm.v1.core.kv_cache_utils import (
@@ -6283,6 +6341,9 @@ class GPUModelRunner(
         """Release GPU tensors (model weights, KV caches, workspace) so that
         memory is reclaimable when running in the same process."""
         from vllm.model_executor.layers.rotary_embedding import _ROPE_DICT
+        from vllm.v1.attention.backends.turboquant_attn import (
+            clear_tq_continuation_buffers,
+        )
         from vllm.v1.worker.workspace import reset_workspace_manager
 
         # Calls torch.accelerator.synchronize()
@@ -6297,6 +6358,7 @@ class GPUModelRunner(
         self.model = None  # type: ignore[assignment]
         _ROPE_DICT.clear()
 
+        clear_tq_continuation_buffers()
         reset_workspace_manager()
         if current_platform.is_rocm():
             gc.collect()
