@@ -6046,7 +6046,17 @@ class GPUModelRunner(
             else:
                 raise e
         if self.speculative_config:
-            draft_token_ids = [[0] for _ in range(num_reqs)]
+            # Use real num_speculative_tokens for warmup so the KV-cache
+            # profile and workspace allocation account for peak
+            # rejection-sampler footprint (vllm#37521).
+            _k = getattr(
+                self.speculative_config, 'num_speculative_tokens', 0
+            ) or 0
+            if _k > 1:
+                _dummy_tokens = list(range(_k))
+            else:
+                _dummy_tokens = [0]
+            draft_token_ids = [_dummy_tokens for _ in range(num_reqs)]
             dummy_spec_decode_metadata = SpecDecodeMetadata.make_dummy(
                 draft_token_ids, self.device
             )
