@@ -3,6 +3,7 @@
 
 import asyncio
 import io
+import os
 import time
 from collections.abc import AsyncGenerator, AsyncIterator
 from collections.abc import Sequence as GenericSequence
@@ -78,6 +79,127 @@ if TYPE_CHECKING:
     from vllm.entrypoints.serve.render.serving import OpenAIServingRender
 
 logger = init_logger(__name__)
+
+# Long-context tool-call adherence (P68 / P69)
+# P68 — auto-upgrade tool_choice "auto" -> "required"
+# P69 — append format reminder to last user message
+
+_LONG_CTX_REMINDER = "[SYSTEM REMINDER - FORMAT REQUIREMENT]"
+
+
+def _p68_env_flag(*names):
+    return any(
+        os.environ.get(n, "").strip().lower()
+        in ("1", "true", "yes", "y", "on")
+        for n in names
+    )
+
+
+def _p68_threshold():
+    raw = os.environ.get(
+        "VLLM_LONG_CONTEXT_TOOL_THRESHOLD_CHARS",
+        os.environ.get("GENESIS_P68_P69_LONG_CTX_THRESHOLD_CHARS", "50000"),
+    )
+    try:
+        return max(1000, int(raw))
+    except (TypeError, ValueError):
+        return 50000
+
+
+def _p68_message_chars(msg):
+    c = msg.get("content") if isinstance(msg, dict) else None
+    if isinstance(c, str):
+        return len(c)
+    if isinstance(c, list):
+        t = 0
+        for p in c:
+            if isinstance(p, dict) and p.get("type") == "text":
+                txt = p.get("text", "")
+                if isinstance(txt, str):
+                    t += len(txt)
+        return t
+    return 0
+
+
+def _p68_tool_names(tools):
+    names = []
+    for t in tools or []:
+        if isinstance(t, dict):
+            n = (t.get("function") or {}).get("name")
+        else:
+            fn = getattr(t, "function", None)
+            n = getattr(fn, "name", None) if fn is not None else None
+        if isinstance(n, str):
+            names.append(n)
+    return names
+
+
+def _p68_build_reminder(tools):
+    names = _p68_tool_names(tools)
+    ns = ", ".join(names) if names else "the provided tools"
+    tag = "\u200b<tool_call\u200b"
+    end = "\u200b</tool_call\u200b"
+    return (
+        "\n\n---\n"
+        f"{_LONG_CTX_REMINDER}\n"
+        "Use one of these tools by emitting "
+        f"`{tag}{{\"name\": \"...\", \"arguments\": {{...}}}}{end}` "
+        f"markers verbatim. Available tools: {ns}.\n"
+        "DO NOT respond with plain text. DO NOT emit JSON without the "
+        f"`{tag}` wrapper. DO NOT emit Python-style function calls. "
+        "DO NOT refuse, claim inability, or fabricate the answer.\n"
+        "Emit ONLY the `{tag}...{end}` block.\n"
+        "---"
+    )
+
+
+def _p68_apply(request):
+    p68 = _p68_env_flag("VLLM_LONG_CONTEXT_AUTO_FORCE_TOOL", "GENESIS_ENABLE_P68_AUTO_FORCE_TOOL")
+    p69 = _p68_env_flag("VLLM_LONG_CONTEXT_TOOL_REMINDER", "GENESIS_ENABLE_P69_LONG_CTX_TOOL_REMINDER")
+    if not (p68 or p69):
+        return
+
+    tools = getattr(request, "tools", None)
+    if not tools:
+        return
+    tc = getattr(request, "tool_choice", None)
+    if tc not in (None, "auto"):
+        return
+
+    messages = getattr(request, "messages", None)
+    if not isinstance(messages, list) or not messages:
+        return
+
+    chars = sum(_p68_message_chars(m) for m in messages)
+    threshold = _p68_threshold()
+    if chars < threshold:
+        return
+
+    if p68:
+        try:
+            request.tool_choice = "required"
+            logger.warning(
+                "Long-context tool request (%d chars >= %d): upgraded "
+                "tool_choice from auto to required. Disable with "
+                "VLLM_LONG_CONTEXT_AUTO_FORCE_TOOL=0 or raise "
+                "VLLM_LONG_CONTEXT_TOOL_THRESHOLD_CHARS.",
+                chars, threshold,
+            )
+        except Exception as e:
+            logger.warning("P68 failed to upgrade tool_choice: %s", e)
+
+    if p69:
+        last = messages[-1]
+        if isinstance(last, dict):
+            c = last.get("content")
+            if last.get("role") == "user" and isinstance(c, str):
+                if _LONG_CTX_REMINDER not in c:
+                    last["content"] = c + _p68_build_reminder(tools)
+                    logger.info(
+                        "Long-context tool request (%d chars >= %d): appended "
+                        "tool-call format reminder to final user message.",
+                        chars, threshold,
+                    )
 
 
 class OpenAIServingChat(OpenAIServing):
@@ -237,6 +359,8 @@ class OpenAIServingChat(OpenAIServing):
         request: ChatCompletionRequest,
         raw_request: Request | None = None,
     ) -> AsyncGenerator[str, None] | ChatCompletionResponse | ErrorResponse:
+        # Long-context tool-call adherence (P68/P69)
+        _p68_apply(request)
         # Streaming response
         tokenizer = self.renderer.tokenizer
         assert tokenizer is not None
