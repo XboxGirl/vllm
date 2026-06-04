@@ -1,16 +1,25 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import re
 from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING
 
 from vllm.entrypoints.openai.engine.protocol import DeltaMessage
 from vllm.reasoning.basic_parsers import BaseThinkingReasoningParser
+from vllm.tool_parsers.utils import partial_tag_overlap
 
 if TYPE_CHECKING:
     from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
     from vllm.entrypoints.openai.responses.protocol import ResponsesRequest
     from vllm.tokenizers import TokenizerLike
+
+
+# Regex for extracting nested tool_call blocks (vllm#39055).
+_EMBEDDED_TOOL_CALL_RE = re.compile(
+    r"<tool_call>(.*?)<\/tool_call>|<tool_call>.*$",
+    re.DOTALL,
+)
 
 
 class Qwen3ReasoningParser(BaseThinkingReasoningParser):
@@ -60,6 +69,41 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
         """The token that ends reasoning content."""
         return "</think>"
 
+    @staticmethod
+    def _split_embedded_tool_calls(
+        reasoning: str | None,
+        content: str | None,
+    ) -> tuple[str | None, str | None]:
+        """Extract nested tool_call XML blocks out of reasoning content.
+
+        Qwen3.5/3.6 models can emit XML tool calls before the thinking end
+        tag. The downstream tool parser only inspects content, so embedded
+        tool calls would otherwise be lost (vllm#39055).
+        """
+        if not reasoning or "<tool_call" not in reasoning or "<function=" not in reasoning:
+            return reasoning, content
+
+        extracted_blocks: list[str] = []
+
+        def _collect_or_keep(match):
+            block = match.group(0)
+            if "<function=" not in block:
+                return block
+            extracted_blocks.append(block.strip())
+            return ""
+
+        remaining_reasoning = _EMBEDDED_TOOL_CALL_RE.sub(_collect_or_keep, reasoning)
+        remaining_reasoning = remaining_reasoning.strip() or None
+
+        if not extracted_blocks:
+            return reasoning, content
+
+        content_parts = ["\n\n".join(extracted_blocks)]
+        if content:
+            content_parts.append(content)
+        merged_content = "\n\n".join(part for part in content_parts if part) or None
+        return remaining_reasoning, merged_content
+
     def is_reasoning_end(self, input_ids: Sequence[int]) -> bool:
         start_token_id = self.start_token_id
         end_token_id = self.end_token_id
@@ -101,14 +145,14 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
         result = super().extract_content_ids(input_ids)
         if result:
             return result
-        # Fall back: content starts at <tool_call> (implicit reasoning end).
+        # Fall back: content starts at FIRST <tool_call> (implicit reasoning end).
+        # Use first occurrence so multi-tool requests with multiple <tool_call> blocks
+        # preserve all tool calls (vllm#40783).
         if (
             self._tool_call_token_id is not None
             and self._tool_call_token_id in input_ids
         ):
-            tool_call_index = (
-                len(input_ids) - 1 - input_ids[::-1].index(self._tool_call_token_id)
-            )
+            tool_call_index = input_ids.index(self._tool_call_token_id)
             return input_ids[tool_call_index:]
         return []
 
@@ -141,7 +185,7 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
 
         if self.end_token in model_output:
             reasoning, _, content = model_output.partition(self.end_token)
-            return reasoning, content or None
+            return self._split_embedded_tool_calls(reasoning, content or None)
 
         if not self.thinking_enabled:
             # Thinking explicitly disabled — treat everything as content.
@@ -152,10 +196,10 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
         if tool_call_index != -1:
             reasoning = model_output[:tool_call_index]
             content = model_output[tool_call_index:]
-            return reasoning or None, content or None
+            return self._split_embedded_tool_calls(reasoning or None, content or None)
         # Thinking enabled but no </think>: output was truncated.
         # Everything generated so far is reasoning.
-        return model_output, None
+        return self._split_embedded_tool_calls(model_output, None)
 
     def extract_reasoning_streaming(
         self,
@@ -227,5 +271,13 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
         ):
             return DeltaMessage(content=delta_text)
         else:
+            # Partial-tag overlap guard: avoid emitting half-formed <tool_call>
+            # as reasoning if the tag is being assembled across deltas.
+            overlap = partial_tag_overlap(current_text, self._tool_call_tag)
+            if overlap > 0:
+                send_len = len(delta_text) - overlap
+                if send_len > 0:
+                    return DeltaMessage(reasoning=delta_text[:send_len])
+                return DeltaMessage()
             # No end token yet: still in reasoning phase.
             return DeltaMessage(reasoning=delta_text)
