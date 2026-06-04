@@ -22,13 +22,11 @@
 - **PN56** — `qwen3coder_tool_parser.py`: Added `_pn56_parse_succeeded` flag and fallback for `prev_tool_call_arr["arguments"]`
 
 ### Spec-decode (`vllm/v1/worker/gpu_model_runner.py`)
-- **PN33** — K-aware warmup: `draft_token_ids` now uses real `num_speculative_tokens` instead of dummy `[0]`
+- **PN33** — K-aware warmup: `draft_token_ids` uses real `num_speculative_tokens` instead of dummy `[0]`
 
----
-
-## Deferred
-
-- **P68/P69** — Long-context tool adherence middleware: Requires new middleware module; deferred for policy review
+### Serving (`vllm/entrypoints/openai/chat_completion/serving.py`)
+- **P68** — Auto-upgrade `tool_choice` `"auto"` → `"required"` at long context (env-gated)
+- **P69** — Append format reminder to last user message at long context (env-gated)
 
 ---
 
