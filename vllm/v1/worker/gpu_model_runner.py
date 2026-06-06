@@ -235,6 +235,21 @@ AttnMetadataDict: TypeAlias = dict[str, AttentionMetadata]
 PerLayerAttnMetadata: TypeAlias = list[AttnMetadataDict] | AttnMetadataDict
 
 
+def _is_gemma4_mtp_draft_attention_layer(
+    vllm_config: VllmConfig,
+    layer_name: str,
+) -> bool:
+    """Return whether ``layer_name`` is a Q-only Gemma4 MTP draft layer."""
+    speculative_config = vllm_config.speculative_config
+    return (
+        speculative_config is not None
+        and speculative_config.use_gemma4_mtp()
+        and layer_name.startswith("draft_model.")
+        and ".layers." in layer_name
+        and layer_name.endswith(".self_attn.attn")
+    )
+
+
 # Wrapper for ModelRunnerOutput to support overlapped execution.
 class AsyncGPUModelRunnerOutput(AsyncModelRunnerOutput):
     def __init__(
@@ -6282,7 +6297,14 @@ class GPUModelRunner(
         reserved_bytes = 0
         seen_layouts: set[tuple[int, int, torch.dtype]] = set()
         attn_layers = get_layers_from_vllm_config(self.vllm_config, Attention)
-        for attn_module in attn_layers.values():
+        for layer_name, attn_module in attn_layers.items():
+            if (
+                attn_module.kv_sharing_target_layer_name
+                or _is_gemma4_mtp_draft_attention_layer(
+                    self.vllm_config, layer_name
+                )
+            ):
+                continue
             if not attn_module.kv_cache_dtype.startswith("turboquant_"):
                 continue
             layout = (
@@ -7537,6 +7559,15 @@ class GPUModelRunner(
         layer_type = cast(type[Any], AttentionLayerBase)
         attn_layers = get_layers_from_vllm_config(self.vllm_config, layer_type)
         for layer_name, attn_module in attn_layers.items():
+            if _is_gemma4_mtp_draft_attention_layer(
+                self.vllm_config, layer_name
+            ):
+                kv_tgt_layer = getattr(
+                    attn_module, "kv_sharing_target_layer_name", None
+                )
+                if kv_tgt_layer:
+                    self.shared_kv_cache_layers[layer_name] = kv_tgt_layer
+                continue
             if isinstance(attn_module, Attention) and (
                 kv_tgt_layer := attn_module.kv_sharing_target_layer_name
             ):
