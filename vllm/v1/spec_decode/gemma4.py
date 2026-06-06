@@ -332,6 +332,8 @@ class Gemma4Proposer(SpecDecodeBaseProposer):
             target_idx = candidates[-1]
             target_layer_name = f"{target_prefix}.{target_idx}.self_attn.attn"
             attn.kv_sharing_target_layer_name = target_layer_name
+            if hasattr(attn.impl, "kv_sharing_target_layer_name"):
+                attn.impl.kv_sharing_target_layer_name = target_layer_name
             logger.info(
                 "Gemma4 MTP: draft layer %d (%s) -> %s",
                 draft_idx,
