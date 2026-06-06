@@ -399,6 +399,45 @@ class TestStreamingExtraction:
                         args_text += arg
         return args_text
 
+    def _collect_arguments_by_index(self, results):
+        """Collect streamed argument deltas by tool-call index."""
+        args_by_index: dict[int, str] = {}
+        for delta, _ in results:
+            if delta and delta.tool_calls:
+                for tc in delta.tool_calls:
+                    func = tc.function if isinstance(tc.function, dict) else tc.function
+                    if isinstance(func, dict):
+                        arg = func.get("arguments", "")
+                    else:
+                        arg = getattr(func, "arguments", "") or ""
+                    if arg:
+                        args_by_index[tc.index] = args_by_index.get(tc.index, "") + arg
+        return args_by_index
+
+    def _collect_arguments_by_index_collapsed_per_delta(self, results):
+        """Collect arguments like a client that coalesces indexes per chunk."""
+        args_by_index: dict[int, str] = {}
+        for delta, _ in results:
+            if delta and delta.tool_calls:
+                tool_calls_by_index = {tc.index: tc for tc in delta.tool_calls}
+                for tc in tool_calls_by_index.values():
+                    func = tc.function if isinstance(tc.function, dict) else tc.function
+                    if isinstance(func, dict):
+                        arg = func.get("arguments", "")
+                    else:
+                        arg = getattr(func, "arguments", "") or ""
+                    if arg:
+                        args_by_index[tc.index] = args_by_index.get(tc.index, "") + arg
+        return args_by_index
+
+    def _collect_content(self, results):
+        """Concatenate all content deltas from streaming results."""
+        out = ""
+        for delta, _ in results:
+            if delta and getattr(delta, "content", None):
+                out += delta.content
+        return out
+
     def _collect_function_name(self, results):
         """Extract the function name from streaming results."""
         for delta, _ in results:
@@ -728,3 +767,141 @@ class TestStreamingExtraction:
         }
 
         assert args_text.count("replace_all") == 1
+
+    def test_streaming_mtp_chunk_crossing_tool_call_boundary(
+        self, parser, mock_request
+    ):
+        """MTP-sized deltas can contain one call's end and the next call's start."""
+        chunks = [
+            "<|tool_call>",
+            "call:getStationInfo{",
+            'location:<|"|>Milano<|"|>}<tool_call|><|tool_call>call:getStationInfo{',
+            'location:<|"|>Piacenza<|"|>}',
+            "<tool_call|>",
+        ]
+
+        results = self._simulate_streaming(parser, mock_request, chunks)
+        args_by_index = self._collect_arguments_by_index(results)
+
+        assert set(args_by_index) == {0, 1}
+        assert json.loads(args_by_index[0]) == {"location": "Milano"}
+        assert json.loads(args_by_index[1]) == {"location": "Piacenza"}
+
+    def test_streaming_mtp_chunk_contains_two_complete_tool_calls(
+        self, parser, mock_request
+    ):
+        """A first streamed delta can contain two complete tool calls."""
+        chunks = [
+            "<|tool_call>call:first{x:1}<tool_call|>"
+            "<|tool_call>call:second{y:2}<tool_call|>",
+        ]
+
+        results = self._simulate_streaming(parser, mock_request, chunks)
+        args_by_index = self._collect_arguments_by_index(results)
+
+        assert set(args_by_index) == {0, 1}
+        assert json.loads(args_by_index[0]) == {"x": 1}
+        assert json.loads(args_by_index[1]) == {"y": 2}
+
+    def test_streaming_mtp_chunk_merges_same_index_argument_segments(
+        self, parser, mock_request
+    ):
+        """Segment replay should not emit duplicate index entries per chunk."""
+        chunks = [
+            "<|tool_call>",
+            "call:write_file{",
+            'path:<|"|>src/main.rs<|"|>}<tool_call|>',
+        ]
+
+        results = self._simulate_streaming(parser, mock_request, chunks)
+
+        for delta, _ in results:
+            if delta and delta.tool_calls:
+                indexes = [tc.index for tc in delta.tool_calls]
+                assert len(indexes) == len(set(indexes))
+
+        args_by_index = self._collect_arguments_by_index_collapsed_per_delta(results)
+        assert set(args_by_index) == {0}
+        assert json.loads(args_by_index[0]) == {"path": "src/main.rs"}
+
+    def test_streaming_mtp_chunk_crossing_buffered_tool_call_boundary(
+        self, parser, mock_request
+    ):
+        """Segment replay must still run when buffering completes a delimiter."""
+        chunks = [
+            "<|tool_call>",
+            "call:getStationInfo{",
+            'location:<|"|>Milano<|"|>}<',
+            'tool_call|><|tool_call>call:getStationInfo{location:<|"|>Piacenza<|"|>}<',
+            "tool_call|>",
+        ]
+
+        results = self._simulate_streaming(parser, mock_request, chunks)
+        args_by_index = self._collect_arguments_by_index(results)
+
+        assert set(args_by_index) == {0, 1}
+        assert json.loads(args_by_index[0]) == {"location": "Milano"}
+        assert json.loads(args_by_index[1]) == {"location": "Piacenza"}
+
+    def test_complete_tool_call_in_single_delta(self, parser, mock_request):
+        """Entire tool call arrives in one streaming chunk."""
+        full_call = (
+            '<|tool_call>call:exec{command:<|"|>echo hello<|"|>}<tool_call|>'
+        )
+        results = self._simulate_streaming(parser, mock_request, [full_call])
+
+        name = self._collect_function_name(results)
+        args_text = self._collect_arguments(results)
+
+        assert name == "exec"
+        assert json.loads(args_text) == {"command": "echo hello"}
+
+    def test_multiple_tool_calls_in_single_delta(self, parser, mock_request):
+        """Multiple complete tool calls arriving in one streaming chunk."""
+        full_delta = (
+            '<|tool_call>call:read{path:<|"|>a.py<|"|>}<tool_call|>'
+            '<|tool_call>call:write{path:<|"|>b.py<|"|>,content:<|"|>hello<|"|>}'
+            "<tool_call|>"
+        )
+        results = self._simulate_streaming(parser, mock_request, [full_delta])
+
+        args_by_index = self._collect_arguments_by_index(results)
+        assert set(args_by_index) == {0, 1}
+        assert json.loads(args_by_index[0]) == {"path": "a.py"}
+        assert json.loads(args_by_index[1]) == {
+            "path": "b.py",
+            "content": "hello",
+        }
+
+    def test_streaming_inter_call_text_preserved_in_single_delta(
+        self, parser, mock_request
+    ):
+        """Plain text between two tool calls in one delta must be preserved."""
+        delta = (
+            '<|tool_call>call:read{path:<|"|>a.py<|"|>}<tool_call|>'
+            " and then "
+            '<|tool_call>call:read{path:<|"|>b.py<|"|>}<tool_call|>'
+        )
+        results = self._simulate_streaming(parser, mock_request, [delta])
+
+        content = self._collect_content(results)
+        assert "and then" in content
+        assert TOOL_CALL_START not in content
+        assert TOOL_CALL_END not in content
+
+    def test_streaming_no_arg_fragment_leak_when_started_inside(
+        self, parser, mock_request
+    ):
+        """A delta that starts inside a tool call must not leak arg fragments."""
+        chunks = [
+            '<|tool_call>call:search{query:<|"|>hel',
+            'lo<|"|>}<tool_call|> result: <|tool_call>call:noop{}<tool_call|>',
+        ]
+        results = self._simulate_streaming(parser, mock_request, chunks)
+
+        content = self._collect_content(results)
+        assert "result:" in content
+        assert TOOL_CALL_START not in content
+        assert TOOL_CALL_END not in content
+        assert "}" not in content
+        assert '<|"|>' not in content

@@ -111,7 +111,7 @@ THOUGHT_PREFIX = {
 }
 THOUGHT_PREFIX_ONLY = {
     "output": "<|channel>thought\n<channel|>",
-    "reasoning": "",
+    "reasoning": None,
     "content": None,
     "is_reasoning_end": True,
 }
@@ -273,3 +273,25 @@ def test_gemma4_previous_turn_reasoning_is_reasoning_end(generic_tokenizer):
     )
     is_reasoning_end = parser.is_reasoning_end(output_tokens)
     assert not is_reasoning_end
+
+
+def test_gemma4_tool_response_does_not_block_reasoning_end(generic_tokenizer):
+    """<|tool_response> in the same delta must not mask a preceding tool call."""
+    vocab = generic_tokenizer.get_vocab()
+    parser: ReasoningParser = ReasoningParserManager.get_reasoning_parser(parser_name)(
+        generic_tokenizer
+    )
+
+    output_tokens = (
+        [vocab["<|channel>"]]
+        + gemma4_encode_output(
+            generic_tokenizer,
+            "thought\n<channel|><|tool_call>done<tool_call|>",
+        )
+        + [vocab["<|tool_response>"]]
+    )
+
+    assert parser.is_reasoning_end(output_tokens), (
+        "is_reasoning_end must return True when <|tool_call> precedes "
+        "<|tool_response> in the same delta"
+    )

@@ -44,10 +44,10 @@
 - **Assessment needed:** Check if these 5 fixes overlap with #42006 or #42300 (the full parser rewrite). If #42006/#42776/#43609 already cover these cases, we can skip #42875.
 
 ## Execution Order
-1. ~~Cherry-pick #42776~~ ✅ Done → `8e93d76`, `2fd6056`
-2. ~~Cherry-pick #42006~~ ✅ Done → `b7d9c4c`
-3. ~~Cherry-pick #43609~~ ✅ Done → `7cc9387`, `d9e3d82`, `89d8dab`, `19b02bd`
-4. ~~Evaluate #42875~~ ✅ Merged — all 4 commits cherry-picked → `bbee763`, `c4cf6aa`, `a47c1e5`, `8d7ee60`
+1. ~~Apply #42776~~ ✅ Reapplied on `xboxgirl/xpu-unified-w4a16-merged`: accepted the PR template/test content for `examples/tool_chat_template_gemma4.jinja` and `tests/renderers/test_gemma4_chat_template.py`.
+2. ~~Apply #42006~~ ✅ Reapplied/adapted: added Gemma4 delimiter-segment replay for MTP-sized deltas crossing tool-call boundaries and targeted parser regressions.
+3. ~~Apply #43609~~ ✅ Reapplied/adapted: added `SupportsTranscription` hooks to `vllm/model_executor/models/gemma4_mm.py`, prompt/config tests, and the Speech2Text docs row.
+4. ~~Evaluate #42875~~ ✅ Reapplied/adapted: kept #42006's segmented replay while adding single-delta tool-call handling, reasoning-boundary preservation, `<|tool_response>` stop-token handling, and empty-reasoning suppression.
 
 ## Conflicts Resolved
 - **#42776**: `examples/tool_chat_template_gemma4.jinja` — accepted PR version (multiline multimodal placeholders)
@@ -55,7 +55,13 @@
 - **#42875**: `vllm/reasoning/gemma4_reasoning_parser.py` — kept HEAD's multi-turn reasoning leak fix over simplified version
 - **#42875**: `vllm/tool_parsers/gemma4_tool_parser.py` — kept HEAD's MTP delta-split method from #42006
 
+## 2026-06-06 Current Branch Verification
+- The old local cherry-pick hashes previously listed here (`8e93d76`, `2fd6056`, `b7d9c4c`, `7cc9387`, `d9e3d82`, `89d8dab`, `19b02bd`, `bbee763`, `c4cf6aa`, `a47c1e5`, `8d7ee60`) were **not present** in this checkout and were not ancestors of `HEAD`.
+- The upstream PR commit objects for #42776 (`0f710694...`), #42006 (`fe026ca4...`), #43609 (`24652b44...` / `e7b07213...`), and #42875 (`0629385a...`) were available locally, but also were not ancestors of `HEAD`.
+- The fixes were therefore reapplied/adapted directly onto `xboxgirl/xpu-unified-w4a16-merged` instead of relying on the stale TODO status.
+- Dependency-free validation run after the reapply: `python -m py_compile` over the modified parser/model/test Python files. Full pytest was attempted but the local `.venv` is missing `pytest`; a template smoke was also attempted but the local `.venv` is missing `jinja2`.
+
 ## Notes
-- All 4 PRs merged cleanly onto our branch
-- #42875 fixes are **complementary** to #42006 (different parser paths: single-delta vs MTP multi-delta)
-- Test command after all merges: `uv pip install -e . && uv run pytest tests/tool_parsers/test_gemma4_tool_parser.py tests/renderers/test_gemma4_chat_template.py -v`
+- All 4 PRs are now represented in the current branch, but the final implementation was an adapted reapply rather than the stale cherry-pick hashes that were previously listed.
+- #42875 fixes are **complementary** to #42006 (different parser paths: single-delta vs MTP multi-delta), so both sets were kept.
+- Recommended full validation after installing test dependencies: `uv run pytest tests/tool_parsers/test_gemma4_tool_parser.py tests/reasoning/test_gemma4_reasoning_parser.py tests/renderers/test_gemma4_chat_template.py tests/models/multimodal/processing/test_gemma4.py -v`
