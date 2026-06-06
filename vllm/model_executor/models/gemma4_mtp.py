@@ -48,7 +48,6 @@ from vllm.model_executor.model_loader.weight_utils import default_weight_loader
 from vllm.sequence import IntermediateTensors
 
 from .gemma4 import Gemma4MLP, _get_text_config
-from .gemma4_mm import _get_suppress_token_ids_tensor, _suppress_logits
 from .utils import (
     AutoWeightsLoader,
     WeightsMapper,
@@ -59,6 +58,23 @@ from .utils import (
 logger = init_logger(__name__)
 
 _PENDING_KV_SHARING_TARGET = "__gemma4_mtp_pending_kv_sharing_target__"
+
+
+def _get_suppress_token_ids_tensor(gen_cfg: dict | None) -> torch.Tensor:
+    suppress_token_ids = gen_cfg.get("suppress_tokens") if gen_cfg else None
+    if not suppress_token_ids:
+        return torch.empty(0, dtype=torch.long)
+    return torch.tensor(suppress_token_ids, dtype=torch.long)
+
+
+def _suppress_logits(
+    logits: torch.Tensor,
+    suppress_token_ids: torch.Tensor,
+) -> torch.Tensor:
+    if suppress_token_ids.numel() == 0:
+        return logits
+    token_ids = suppress_token_ids.to(device=logits.device, non_blocking=True)
+    return logits.index_fill_(-1, token_ids, -float("inf"))
 
 
 class Gemma4MTPMaskedEmbedder(nn.Module):
