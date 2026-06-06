@@ -50,6 +50,8 @@ from vllm.v1.kv_cache_interface import (
     SinkFullAttentionSpec,
     SlidingWindowMLASpec,
     SlidingWindowSpec,
+    TQFullAttentionSpec,
+    TQSlidingWindowSpec,
     UniformTypeKVCacheSpecs,
     get_kv_cache_spec_kind,
     get_kv_cache_spec_sliding_window,
@@ -1846,6 +1848,56 @@ def test_get_kv_cache_configs_attention_free():
             kv_cache_groups=[],
         )
     ]
+
+
+def test_get_kv_cache_configs_tq_sliding_window_hybrid():
+    """Gemma4-style TQ full + sliding-window layers stay compressed.
+
+    Gemma4 has mostly sliding-window layers plus a few full-attention layers.
+    With TurboQuant KV cache, both layer types should use the packed TQ slot
+    size.  Regressing sliding-window layers back to standard uint8 K/V pages
+    makes the page sizes non-divisible and forces padding that loses most of
+    the intended memory savings.
+    """
+    vllm_config = VllmConfig(model_config=ModelConfig(max_model_len=16))
+    tq_slot_size = 262
+    full_tq = TQFullAttentionSpec(
+        block_size=64,
+        num_kv_heads=8,
+        head_size=256,
+        head_size_v=256,
+        dtype=torch.uint8,
+        tq_slot_size=tq_slot_size,
+    )
+    sliding_tq = TQSlidingWindowSpec(
+        block_size=64,
+        num_kv_heads=8,
+        head_size=256,
+        dtype=torch.uint8,
+        sliding_window=1024,
+        tq_slot_size=tq_slot_size,
+    )
+    assert full_tq.page_size_bytes == sliding_tq.page_size_bytes == 134144
+
+    kv_cache_specs = {
+        **{f"sliding_{i}": sliding_tq for i in range(25)},
+        **{f"full_{i}": full_tq for i in range(5)},
+    }
+    kv_cache_config = get_kv_cache_configs(
+        vllm_config,
+        [kv_cache_specs],
+        [full_tq.page_size_bytes * 30 * 32],
+    )[0]
+
+    assert kv_cache_config.num_blocks == 192
+    page_sizes = {
+        g.kv_cache_spec.page_size_bytes for g in kv_cache_config.kv_cache_groups
+    }
+    assert page_sizes == {134144}
+    assert not any(
+        getattr(g.kv_cache_spec, "page_size_padded", None)
+        for g in kv_cache_config.kv_cache_groups
+    )
 
 
 def test_generate_uniform_type_kv_cache_specs():
