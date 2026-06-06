@@ -564,7 +564,11 @@ class Attention(nn.Module, AttentionLayerBase):
         return self.attn_backend
 
     def get_kv_cache_spec(self, vllm_config: VllmConfig) -> KVCacheSpec | None:
-        if self.kv_sharing_target_layer_name is not None:
+        if (
+            self.kv_sharing_target_layer_name is not None
+            or getattr(self, "is_kv_shared_layer", False)
+            or getattr(self.impl, "kv_sharing_target_layer_name", None) is not None
+        ):
             return None
 
         # Block size may get updated after model loading, refresh it

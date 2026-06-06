@@ -235,6 +235,7 @@ class Gemma4MTPAttention(nn.Module):
         # Gemma4 MTP layers are Q-only: they never own KV cache and must not
         # contribute standalone KV specs.  The proposer overwrites this
         # placeholder with the actual target layer after both models are loaded.
+        self.attn.is_kv_shared_layer = True
         self.attn.kv_sharing_target_layer_name = _PENDING_KV_SHARING_TARGET
         if hasattr(self.attn.impl, "kv_sharing_target_layer_name"):
             self.attn.impl.kv_sharing_target_layer_name = _PENDING_KV_SHARING_TARGET

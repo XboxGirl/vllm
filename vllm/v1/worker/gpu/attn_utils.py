@@ -45,6 +45,30 @@ def _is_gemma4_mtp_draft_attention_layer(
     )
 
 
+def _get_kv_sharing_target_layer_name(attn_module: Any) -> str | None:
+    """Get the KV-sharing target advertised by an attention module."""
+    if getattr(attn_module, "is_kv_shared_layer", False):
+        return getattr(attn_module, "kv_sharing_target_layer_name", None) or getattr(
+            getattr(attn_module, "impl", None), "kv_sharing_target_layer_name", None
+        )
+    return getattr(attn_module, "kv_sharing_target_layer_name", None) or getattr(
+        getattr(attn_module, "impl", None), "kv_sharing_target_layer_name", None
+    )
+
+
+def _is_kv_shared_attention_layer(
+    vllm_config: VllmConfig,
+    layer_name: str,
+    attn_module: Any,
+) -> bool:
+    """Return whether an attention module should not own KV cache."""
+    return bool(
+        _get_kv_sharing_target_layer_name(attn_module)
+        or getattr(attn_module, "is_kv_shared_layer", False)
+        or _is_gemma4_mtp_draft_attention_layer(vllm_config, layer_name)
+    )
+
+
 @dataclass(frozen=True)
 class AttentionCGSupportInfo:
     min_cg_support: AttentionCGSupport = AttentionCGSupport.ALWAYS
@@ -56,9 +80,7 @@ def get_kv_cache_spec(vllm_config: VllmConfig) -> dict[str, KVCacheSpec]:
     layer_type = cast(type[Any], AttentionLayerBase)
     attn_layers = get_layers_from_vllm_config(vllm_config, layer_type)
     for layer_name, attn_module in attn_layers.items():
-        if getattr(
-            attn_module, "kv_sharing_target_layer_name", None
-        ) or _is_gemma4_mtp_draft_attention_layer(vllm_config, layer_name):
+        if _is_kv_shared_attention_layer(vllm_config, layer_name, attn_module):
             # This layer will use KV cache of the sharing target layer.
             continue
         # Skip modules that don't need KV cache (eg encoder-only attention)

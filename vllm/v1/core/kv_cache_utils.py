@@ -1848,7 +1848,8 @@ def _log_kv_cache_group_memory_plan(
         max_bytes = spec.max_memory_usage_bytes(vllm_config)
         logger.info(
             "KV group %d: type=%s layers=%d block_size=%s page=%d "
-            "max_pages=%d max_bytes=%.2f MiB padded=%s sliding_window=%s",
+            "max_pages=%d max_bytes=%.2f MiB padded=%s sliding_window=%s "
+            "layer_names=%s",
             i,
             type(spec).__name__,
             len(group.layer_names),
@@ -1858,6 +1859,7 @@ def _log_kv_cache_group_memory_plan(
             max_bytes / (1024**2),
             getattr(spec, "page_size_padded", None),
             getattr(spec, "sliding_window", None),
+            group.layer_names,
         )
 
 

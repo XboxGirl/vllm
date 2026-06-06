@@ -250,6 +250,30 @@ def _is_gemma4_mtp_draft_attention_layer(
     )
 
 
+def _get_kv_sharing_target_layer_name(attn_module: Any) -> str | None:
+    """Get the KV-sharing target advertised by an attention module."""
+    if getattr(attn_module, "is_kv_shared_layer", False):
+        return getattr(attn_module, "kv_sharing_target_layer_name", None) or getattr(
+            getattr(attn_module, "impl", None), "kv_sharing_target_layer_name", None
+        )
+    return getattr(attn_module, "kv_sharing_target_layer_name", None) or getattr(
+        getattr(attn_module, "impl", None), "kv_sharing_target_layer_name", None
+    )
+
+
+def _is_kv_shared_attention_layer(
+    vllm_config: VllmConfig,
+    layer_name: str,
+    attn_module: Any,
+) -> bool:
+    """Return whether an attention module should not own KV cache."""
+    return bool(
+        _get_kv_sharing_target_layer_name(attn_module)
+        or getattr(attn_module, "is_kv_shared_layer", False)
+        or _is_gemma4_mtp_draft_attention_layer(vllm_config, layer_name)
+    )
+
+
 # Wrapper for ModelRunnerOutput to support overlapped execution.
 class AsyncGPUModelRunnerOutput(AsyncModelRunnerOutput):
     def __init__(
@@ -6298,11 +6322,8 @@ class GPUModelRunner(
         seen_layouts: set[tuple[int, int, torch.dtype]] = set()
         attn_layers = get_layers_from_vllm_config(self.vllm_config, Attention)
         for layer_name, attn_module in attn_layers.items():
-            if (
-                attn_module.kv_sharing_target_layer_name
-                or _is_gemma4_mtp_draft_attention_layer(
-                    self.vllm_config, layer_name
-                )
+            if _is_kv_shared_attention_layer(
+                self.vllm_config, layer_name, attn_module
             ):
                 continue
             if not attn_module.kv_cache_dtype.startswith("turboquant_"):
@@ -7559,12 +7580,10 @@ class GPUModelRunner(
         layer_type = cast(type[Any], AttentionLayerBase)
         attn_layers = get_layers_from_vllm_config(self.vllm_config, layer_type)
         for layer_name, attn_module in attn_layers.items():
-            if _is_gemma4_mtp_draft_attention_layer(
-                self.vllm_config, layer_name
+            if _is_kv_shared_attention_layer(
+                self.vllm_config, layer_name, attn_module
             ):
-                kv_tgt_layer = getattr(
-                    attn_module, "kv_sharing_target_layer_name", None
-                )
+                kv_tgt_layer = _get_kv_sharing_target_layer_name(attn_module)
                 if kv_tgt_layer:
                     self.shared_kv_cache_layers[layer_name] = kv_tgt_layer
                 continue
