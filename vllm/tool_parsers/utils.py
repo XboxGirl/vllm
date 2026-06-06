@@ -683,7 +683,9 @@ def coerce_to_schema_type(value: str, schema_type: str | list[str]) -> Any:
             continue
 
         if candidate_type == "null":
-            if value.lower() == "null":
+            # Qwen3.5+ chat template emits Python repr 'None' (Jinja `| string`)
+            # instead of JSON 'null'. Accept both case-insensitively.
+            if value.lower() in ("null", "none"):
                 return None
             continue
         if candidate_type == "string":
