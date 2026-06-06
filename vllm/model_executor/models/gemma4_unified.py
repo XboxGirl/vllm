@@ -64,6 +64,24 @@ __all__ = [
     "Gemma4UnifiedForConditionalGeneration",
 ]
 
+_DEFAULT_UNIFIED_IMAGE_SOFT_TOKENS = 280
+
+
+def _get_unified_image_soft_tokens(vision_config: object | None) -> int:
+    """Return the max image soft-token count for Gemma4 Unified configs.
+
+    Transformers Gemma4 Unified config schemas have used both
+    ``num_soft_tokens`` and the tower-style ``default_output_length`` field.
+    Some text/QAT checkpoints still carry a unified vision config object but
+    omit ``num_soft_tokens`` entirely, so avoid failing server startup while
+    computing the multimodal budget.
+    """
+    for attr in ("num_soft_tokens", "default_output_length"):
+        value = getattr(vision_config, attr, None)
+        if isinstance(value, int) and value > 0:
+            return value
+    return _DEFAULT_UNIFIED_IMAGE_SOFT_TOKENS
+
 
 # ---------------------------------------------------------------------------
 # Encoder-free vision embedder
@@ -142,7 +160,8 @@ class Gemma4UnifiedProcessingInfo(Gemma4ProcessingInfo):
 
     Two field-name differences from the tower-based parent:
       * config → ``Gemma4UnifiedConfig`` (not ``Gemma4Config``)
-      * vision_config.``num_soft_tokens`` (not ``default_output_length``)
+      * vision_config.``num_soft_tokens`` when present, otherwise the
+        tower-style ``default_output_length`` compatibility field
 
     Everything else (token sequencing, audio limits, video frame budget,
     parser construction) is inherited unchanged.
@@ -157,19 +176,42 @@ class Gemma4UnifiedProcessingInfo(Gemma4ProcessingInfo):
             **kwargs,
         )
 
+    def validate_num_items(self, modality: str, num_items: int) -> None:
+        if (
+            modality == "audio"
+            and num_items > 0
+            and getattr(self.get_hf_config(), "audio_config", None) is None
+        ):
+            model = self.ctx.model_config.model
+            raise ValueError(
+                f"Audio input was provided but the model "
+                f"'{model}' does not have an audio tower. "
+                f"Audio inference is only supported for Gemma4 "
+                f"models that include an audio_config "
+                f"(i.e., models that include an audio_config)."
+            )
+        super().validate_num_items(modality, num_items)
+
+    def get_supported_mm_limits(self) -> Mapping[str, int | None]:
+        config = self.get_hf_config()
+        limits: dict[str, int | None] = {"image": None}
+        if getattr(config, "audio_config", None) is not None:
+            limits["audio"] = None
+        limits["video"] = None
+        return limits
+
     def get_mm_max_tokens_per_item(
         self, seq_len: int, mm_counts: Mapping[str, int]
     ) -> Mapping[str, int] | None:
         config = self.get_hf_config()
-        # Unified field is `num_soft_tokens`.  Tower-based parent uses
-        # `default_output_length`, hence the override.
-        tokens_per_image = config.vision_config.num_soft_tokens
+        vision_config = getattr(config, "vision_config", None)
+        tokens_per_image = _get_unified_image_soft_tokens(vision_config)
         merged_kwargs = self.ctx.get_merged_mm_kwargs({})
         val, _ = _get_max_soft_tokens(merged_kwargs)
         if isinstance(val, int) and val in _SUPPORTED_SOFT_TOKENS:
             tokens_per_image = val
         tokens: dict[str, int] = {"image": tokens_per_image}
-        if config.audio_config is not None:
+        if getattr(config, "audio_config", None) is not None:
             processor = self.get_hf_processor()
             tokens["audio"] = processor.audio_seq_length
         num_frames = _VIDEO_MAX_FRAMES
@@ -189,12 +231,18 @@ class Gemma4UnifiedProcessingInfo(Gemma4ProcessingInfo):
         image_height: int,
         max_soft_tokens: int | None = None,
     ) -> int:
-        vision_cfg = self.get_hf_config().vision_config
+        vision_cfg = getattr(self.get_hf_config(), "vision_config", None)
+        if vision_cfg is None:
+            return (
+                max_soft_tokens
+                if max_soft_tokens is not None
+                else _DEFAULT_UNIFIED_IMAGE_SOFT_TOKENS
+            )
         patch_size = vision_cfg.patch_size
         pooling_kernel_size = vision_cfg.pooling_kernel_size
 
         if max_soft_tokens is None:
-            max_soft_tokens = vision_cfg.num_soft_tokens
+            max_soft_tokens = _get_unified_image_soft_tokens(vision_cfg)
 
         unit = patch_size * pooling_kernel_size
         max_patches = max_soft_tokens * pooling_kernel_size**2
@@ -257,6 +305,8 @@ class Gemma4UnifiedForConditionalGeneration(Gemma4ForConditionalGeneration):
         self.config = config
         self.quant_config = quant_config
         self.multimodal_config = multimodal_config
+        vision_config = getattr(config, "vision_config", None)
+        audio_config = getattr(config, "audio_config", None)
 
         # No towers — set to None so inherited load_weights / get_mm_mapping
         # and any tower-aware logic short-circuits.
@@ -266,29 +316,29 @@ class Gemma4UnifiedForConditionalGeneration(Gemma4ForConditionalGeneration):
         # ---- Encoder-free vision embedder ----
         self.vision_embedder = (
             Gemma4UnifiedVisionEmbedder(
-                config.vision_config,
+                vision_config,
                 quant_config=quant_config,
                 prefix=maybe_prefix(prefix, "vision_embedder"),
             )
-            if config.vision_config is not None
+            if vision_config is not None
             else None
         )
         self.embed_vision = (
             Gemma4MultimodalEmbedder(
-                config.vision_config,
+                vision_config,
                 config.text_config,
             )
-            if config.vision_config is not None
+            if vision_config is not None
             else None
         )
 
         # ---- Encoder-free audio embedder ----
         self.embed_audio = (
             Gemma4MultimodalEmbedder(
-                config.audio_config,
+                audio_config,
                 config.text_config,
             )
-            if config.audio_config is not None
+            if audio_config is not None
             else None
         )
 
