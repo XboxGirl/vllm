@@ -48,6 +48,7 @@ from vllm.model_executor.model_loader.weight_utils import default_weight_loader
 from vllm.sequence import IntermediateTensors
 
 from .gemma4 import Gemma4MLP, _get_text_config
+from .gemma4_mm import _get_suppress_token_ids_tensor, _suppress_logits
 from .utils import (
     AutoWeightsLoader,
     WeightsMapper,
@@ -564,7 +565,11 @@ class Gemma4MTP(nn.Module):
 
         draft_cfg = vllm_config.speculative_config.draft_model_config
         gen_cfg = draft_cfg.try_get_generation_config()
-        self._suppress_token_ids = gen_cfg.get("suppress_tokens") if gen_cfg else None
+        self.register_buffer(
+            "_suppress_token_ids",
+            _get_suppress_token_ids_tensor(gen_cfg),
+            persistent=False,
+        )
 
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.model.embed_input_ids(input_ids)
@@ -616,8 +621,8 @@ class Gemma4MTP(nn.Module):
             )
         else:
             logits = self.logits_processor(self.lm_head, hidden_states)
-        if logits is not None and self._suppress_token_ids:
-            logits[:, self._suppress_token_ids] = -float("inf")
+        if logits is not None:
+            logits = _suppress_logits(logits, self._suppress_token_ids)
         return logits
 
     def get_top_tokens(

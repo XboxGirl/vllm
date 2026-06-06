@@ -43,6 +43,7 @@ from vllm.model_executor.models.gemma4_mm import (
     Gemma4MultimodalEmbedder,
     Gemma4MultiModalProcessor,
     Gemma4ProcessingInfo,
+    _get_suppress_token_ids_tensor,
     _get_max_soft_tokens,
 )
 from vllm.model_executor.models.module_mapping import MultiModelKeys
@@ -397,7 +398,11 @@ class Gemma4UnifiedForConditionalGeneration(Gemma4ForConditionalGeneration):
         self.num_redundant_experts = self.language_model.num_redundant_experts
 
         gen_cfg = vllm_config.model_config.try_get_generation_config()
-        self._suppress_token_ids = gen_cfg.get("suppress_tokens") if gen_cfg else None
+        self.register_buffer(
+            "_suppress_token_ids",
+            _get_suppress_token_ids_tensor(gen_cfg),
+            persistent=False,
+        )
 
     # ------------------------------------------------------------------ #
     # Multimodal processing (encoder-free overrides)

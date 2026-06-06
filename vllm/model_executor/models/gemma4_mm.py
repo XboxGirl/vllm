@@ -96,6 +96,23 @@ _VIDEO_MAX_SOFT_TOKENS = 70  # soft tokens per video frame (vs 280 for images)
 _VIDEO_MAX_FRAMES = 32  # max sampled frames per video
 
 
+def _get_suppress_token_ids_tensor(gen_cfg: Mapping[str, Any] | None) -> torch.Tensor:
+    suppress_token_ids = gen_cfg.get("suppress_tokens") if gen_cfg else None
+    if not suppress_token_ids:
+        return torch.empty(0, dtype=torch.long)
+    return torch.tensor(suppress_token_ids, dtype=torch.long)
+
+
+def _suppress_logits(
+    logits: torch.Tensor,
+    suppress_token_ids: torch.Tensor,
+) -> torch.Tensor:
+    if suppress_token_ids.numel() == 0:
+        return logits
+    token_ids = suppress_token_ids.to(device=logits.device, non_blocking=True)
+    return logits.index_fill_(-1, token_ids, -float("inf"))
+
+
 def _get_max_soft_tokens(
     merged_kwargs: Mapping[str, object],
 ) -> tuple[object | None, bool]:
@@ -1129,7 +1146,11 @@ class Gemma4ForConditionalGeneration(
         self.num_redundant_experts = self.language_model.num_redundant_experts
 
         gen_cfg = vllm_config.model_config.try_get_generation_config()
-        self._suppress_token_ids = gen_cfg.get("suppress_tokens") if gen_cfg else None
+        self.register_buffer(
+            "_suppress_token_ids",
+            _get_suppress_token_ids_tensor(gen_cfg),
+            persistent=False,
+        )
 
     # ------------------------------------------------------------------ #
     # Input parsing
@@ -1610,8 +1631,8 @@ class Gemma4ForConditionalGeneration(
         hidden_states: torch.Tensor,
     ) -> torch.Tensor | None:
         logits = self.language_model.compute_logits(hidden_states)
-        if logits is not None and self._suppress_token_ids:
-            logits[:, self._suppress_token_ids] = -float("inf")
+        if logits is not None:
+            logits = _suppress_logits(logits, self._suppress_token_ids)
         return logits
 
     # ------------------------------------------------------------------ #
