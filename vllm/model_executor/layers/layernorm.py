@@ -61,9 +61,6 @@ class RMSNorm(CustomOp):
         )
         weight_dtype = dtype or torch.get_default_dtype()
         self.has_weight = has_weight
-        self.weight = torch.ones(hidden_size, dtype=weight_dtype)
-        if self.has_weight:
-            self.weight = nn.Parameter(self.weight)
 
         # Do not pass identity weight to native implementation (causes issue on TPU).
         # Other implementations require weight to be passed even if all ones.
@@ -78,6 +75,19 @@ class RMSNorm(CustomOp):
         native_add_rms_norm = priority.fused_add_rms_norm[0] == "native" or var_override
         self.pass_weight = self.has_weight or not native_rms_norm
         self.pass_weight_add = self.has_weight or not native_add_rms_norm
+
+        if self.has_weight or self.pass_weight or self.pass_weight_add:
+            self.weight = torch.ones(hidden_size, dtype=weight_dtype)
+        else:
+            # No learned weight, and native RMSNorm paths will receive None.
+            # Avoid an eager all-ones fill during model construction; on XPU,
+            # tiny accelerator fill kernels in this late-startup path can fail
+            # with UR_RESULT_ERROR_OUT_OF_RESOURCES after runner buffers have
+            # already been allocated. The tensor is kept only for shape/device
+            # bookkeeping and is not read by forward_native().
+            self.weight = torch.empty(hidden_size, dtype=weight_dtype)
+        if self.has_weight:
+            self.weight = nn.Parameter(self.weight)
 
     def forward_native(
         self,
