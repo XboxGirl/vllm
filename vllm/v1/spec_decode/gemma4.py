@@ -231,6 +231,41 @@ class Gemma4Proposer(SpecDecodeBaseProposer):
                 else:
                     layer_to_spec[ln] = group_spec
 
+        # Gemma4 MTP draft attention layers are Q-only and do not own KV cache,
+        # so they are intentionally absent from the KV cache groups. They still
+        # need per-layer attention metadata and a group id so their attention op
+        # can read the target model's shared KV cache.
+        for layer_name in self._draft_attn_layer_names:
+            if layer_name in layer_to_spec:
+                continue
+            attn_layer = all_attn_layers.get(layer_name)
+            if attn_layer is None:
+                continue
+            target_layer_name = getattr(attn_layer, "kv_sharing_target_layer_name", None)
+            if target_layer_name is None:
+                target_layer_name = getattr(
+                    getattr(attn_layer, "impl", None),
+                    "kv_sharing_target_layer_name",
+                    None,
+                )
+            if target_layer_name is None:
+                logger.warning(
+                    "Gemma4 MTP draft layer %s has no KV sharing target; "
+                    "skipping attention metadata setup.",
+                    layer_name,
+                )
+                continue
+            if target_layer_name not in layer_to_spec:
+                logger.warning(
+                    "Gemma4 MTP draft layer %s targets %s, but the target is "
+                    "not present in KV cache groups.",
+                    layer_name,
+                    target_layer_name,
+                )
+                continue
+            layer_to_gid[layer_name] = layer_to_gid[target_layer_name]
+            layer_to_spec[layer_name] = layer_to_spec[target_layer_name]
+
         attention_groups: dict[tuple[tuple[str, str], KVCacheSpec], AttentionGroup] = {}
         for layer_name in self._draft_attn_layer_names:
             if layer_name not in layer_to_spec:
