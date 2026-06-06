@@ -24,6 +24,7 @@ from typing import Any, ClassVar
 import torch
 import torch.nn.functional as F
 
+import vllm.envs as envs
 from vllm.config import get_current_vllm_config
 from vllm.config.cache import CacheDType
 from vllm.model_executor.layers.quantization.turboquant.centroids import (
@@ -66,7 +67,21 @@ if _HAS_FLASH_ATTN:
 # do_kv_cache_update already stored all tokens to TQ cache, so the decode
 # kernel can read them efficiently. This avoids O(cached_len) dequant work
 # per continuation, eliminating the O(N²/chunk_size) collapse at long context.
-_CONTINUATION_DECODE_THRESHOLD = 128
+_DEFAULT_CONTINUATION_DECODE_THRESHOLD = 128
+
+
+def get_tq_continuation_decode_threshold(max_num_batched_tokens: int) -> int:
+    """Return q_len threshold for using decode-style continuation.
+
+    A configured value <= 0 means all scheduler-sized continuation chunks use
+    the compressed-cache decode path. This avoids allocating dense full-context
+    K/V scratch, which can be larger than the compressed KV cache itself on
+    memory-limited devices.
+    """
+    configured = envs.VLLM_TQ_CONTINUATION_DECODE_THRESHOLD
+    if configured <= 0:
+        return max_num_batched_tokens
+    return configured
 
 _TQ_CONTINUATION_FALLBACK_BUFFERS: dict[
     tuple[str, int | None, int, int, torch.dtype],
@@ -172,6 +187,7 @@ def _get_tq_continuation_full_buffers(
 
 def reserve_tq_continuation_buffers(
     max_seq_len: int,
+    max_num_batched_tokens: int,
     block_size: int,
     num_kv_heads: int,
     head_size: int,
@@ -184,7 +200,8 @@ def reserve_tq_continuation_buffers(
     memory budget calculation, so later large-context requests do not allocate
     it outside the configured ``--gpu-memory-utilization`` envelope.
     """
-    if max_seq_len <= _CONTINUATION_DECODE_THRESHOLD:
+    decode_threshold = get_tq_continuation_decode_threshold(max_num_batched_tokens)
+    if max_seq_len <= decode_threshold or max_num_batched_tokens <= decode_threshold:
         return 0
     alloc_len = math.ceil(max_seq_len / block_size) * block_size
     dequant_shape = (1, num_kv_heads, alloc_len, head_size)
@@ -854,7 +871,10 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
                 # avoid O(cached_len) full-dequant per continuation.
                 # For large continuations, fall back to _continuation_prefill.
                 cached_len = seq_len - q_len
-                if q_len <= _CONTINUATION_DECODE_THRESHOLD:
+                decode_threshold = get_tq_continuation_decode_threshold(
+                    get_current_vllm_config().scheduler_config.max_num_batched_tokens
+                )
+                if q_len <= decode_threshold:
                     # Fast path: treat each query as a decode request
                     # with incremental seq_lens for causal masking.
                     # Slice from pre-built arange (no kernel launch)

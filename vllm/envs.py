@@ -254,6 +254,7 @@ if TYPE_CHECKING:
     VLLM_USE_NCCL_SYMM_MEM: bool = False
     VLLM_NCCL_INCLUDE_PATH: str | None = None
     VLLM_USE_FBGEMM: bool = False
+    VLLM_TQ_CONTINUATION_DECODE_THRESHOLD: int = 0
     VLLM_GC_DEBUG: str = ""
     VLLM_DEBUG_WORKSPACE: bool = False
     VLLM_PROFILE_RUN_MAX_TOKENS: int = 4096
@@ -1872,6 +1873,13 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "VLLM_NCCL_INCLUDE_PATH": lambda: os.environ.get("VLLM_NCCL_INCLUDE_PATH", None),
     # Flag to enable FBGemm kernels on model execution
     # Deprecated: use --linear-backend fbgemm instead.
+    # TurboQuant continuation chunks with q_len at or below this threshold use
+    # the compressed-cache decode kernel instead of dense full-dequant prefill.
+    # A value <= 0 means use the runtime max_num_batched_tokens, avoiding the
+    # large max_model_len-sized continuation scratch reservation.
+    "VLLM_TQ_CONTINUATION_DECODE_THRESHOLD": lambda: int(
+        os.getenv("VLLM_TQ_CONTINUATION_DECODE_THRESHOLD", "0")
+    ),
     "VLLM_USE_FBGEMM": deprecated_env(
         "VLLM_USE_FBGEMM",
         "v0.23",

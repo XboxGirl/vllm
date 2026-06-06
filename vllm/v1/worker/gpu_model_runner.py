@@ -6314,10 +6314,20 @@ class GPUModelRunner(
             return
 
         from vllm.v1.attention.backends.turboquant_attn import (
+            get_tq_continuation_decode_threshold,
             reserve_tq_continuation_buffers,
         )
 
         block_size = self.cache_config.block_size
+        decode_threshold = get_tq_continuation_decode_threshold(self.max_num_tokens)
+        if self.max_num_tokens <= decode_threshold:
+            logger.info_once(
+                "TurboQuant continuation chunks up to %d tokens will use "
+                "decode-style attention; skipping dense continuation scratch "
+                "reservation during memory profiling.",
+                decode_threshold,
+            )
+
         reserved_bytes = 0
         seen_layouts: set[tuple[int, int, torch.dtype]] = set()
         attn_layers = get_layers_from_vllm_config(self.vllm_config, Attention)
@@ -6339,6 +6349,7 @@ class GPUModelRunner(
             try:
                 reserved_bytes += reserve_tq_continuation_buffers(
                     max_seq_len=self.max_model_len,
+                    max_num_batched_tokens=self.max_num_tokens,
                     block_size=block_size,
                     num_kv_heads=attn_module.num_kv_heads,
                     head_size=attn_module.head_size,
