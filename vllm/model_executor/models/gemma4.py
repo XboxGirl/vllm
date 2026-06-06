@@ -501,6 +501,7 @@ class Gemma4Attention(nn.Module):
             kv_sharing_target_layer_name=kv_sharing_target_layer_name,
             prefix=f"{prefix}.attn",
         )
+        self.attn.is_kv_shared_layer = self.is_kv_shared_layer
 
     def forward(
         self,

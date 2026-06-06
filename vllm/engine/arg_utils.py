@@ -1777,7 +1777,21 @@ class EngineArgs:
             kv_offloading_backend=self.kv_offloading_backend,
         )
 
-        if resolved_cache_dtype.startswith("turboquant_"):
+        spec_model = (
+            self.speculative_config.get("model")
+            if isinstance(self.speculative_config, dict)
+            else None
+        )
+        is_gemma4_mtp_spec_decode = (
+            spec_model is not None
+            and "gemma" in str(spec_model).lower()
+            and "assistant" in str(spec_model).lower()
+        )
+
+        if (
+            resolved_cache_dtype.startswith("turboquant_")
+            and not is_gemma4_mtp_spec_decode
+        ):
             from vllm.model_executor.layers.quantization.turboquant.config import (
                 TurboQuantConfig,
             )
@@ -1786,6 +1800,11 @@ class EngineArgs:
             existing = set(cache_config.kv_cache_dtype_skip_layers)
             cache_config.kv_cache_dtype_skip_layers = sorted(
                 existing | set(boundary), key=int
+            )
+        elif resolved_cache_dtype.startswith("turboquant_"):
+            logger.info(
+                "Disabling TurboQuant boundary KV skip for Gemma4 MTP "
+                "speculative decoding to keep target KV cache layout uniform."
             )
 
         ray_runtime_env = None
