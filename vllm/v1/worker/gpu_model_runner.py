@@ -7193,17 +7193,21 @@ class GPUModelRunner(
                     raw_tensor = kv_cache_raw_tensors[layer_name].view(dtype)
                     if kv_cache_spec.page_size_padded is not None:
                         # Use strided view to handle page_size_bytes that
-                        # include padding. This follows
-                        # the same pattern as MambaSpec handling below.
-                        # NOTE: This assumes kv_cache_shape[0] == num_blocks
-                        # (i.e. the first physical dimension is the block
-                        # index), which holds for MLA backends but NOT for
-                        # standard attention backends whose shape starts with
-                        # a K/V dimension of size 2.
+                        # include padding. This follows the same pattern as
+                        # MambaSpec handling below, but uses the backend's
+                        # reported block dimension so it also works for
+                        # standard attention layouts.
                         dtype_size = get_dtype_size(dtype)
                         page_stride = kv_cache_spec.page_size_bytes // dtype_size
+                        block_dim = attn_backend.get_kv_cache_block_dim(
+                            shape_block_size,
+                            kv_cache_spec.num_kv_heads,
+                            kv_cache_spec.head_size,
+                            cache_dtype_str=self.cache_config.cache_dtype,
+                        )
+                        physical_block_dim = kv_cache_stride_order.index(block_dim)
                         strides = list(torch.empty(kv_cache_shape).stride())
-                        strides[inv_order[0]] = page_stride
+                        strides[physical_block_dim] = page_stride
                         kv_cache = torch.as_strided(
                             raw_tensor,
                             size=kv_cache_shape,
