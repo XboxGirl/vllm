@@ -68,20 +68,56 @@ if _HAS_FLASH_ATTN:
 # kernel can read them efficiently. This avoids O(cached_len) dequant work
 # per continuation, eliminating the O(N²/chunk_size) collapse at long context.
 _DEFAULT_CONTINUATION_DECODE_THRESHOLD = 128
+_LOW_MEMORY_TQ_CONTINUATION_CUTOFF_BYTES = 24 * (1 << 30)
 
 
-def get_tq_continuation_decode_threshold(max_num_batched_tokens: int) -> int:
+def _get_device_total_memory(device: torch.device | None) -> int | None:
+    if device is None:
+        return None
+    try:
+        if device.type == "cuda" and torch.cuda.is_available():
+            index = (
+                device.index if device.index is not None else torch.cuda.current_device()
+            )
+            return torch.cuda.get_device_properties(index).total_memory
+        if device.type == "xpu" and hasattr(torch, "xpu") and torch.xpu.is_available():
+            index = (
+                device.index if device.index is not None else torch.xpu.current_device()
+            )
+            return torch.xpu.get_device_properties(index).total_memory
+    except Exception:
+        return None
+    return None
+
+
+def get_tq_continuation_decode_threshold(
+    max_num_batched_tokens: int,
+    device: torch.device | None = None,
+) -> int:
     """Return q_len threshold for using decode-style continuation.
 
-    A configured value <= 0 means all scheduler-sized continuation chunks use
-    the compressed-cache decode path. This avoids allocating dense full-context
-    K/V scratch, which can be larger than the compressed KV cache itself on
-    memory-limited devices.
+    Env semantics:
+    * >0: explicit threshold. The historical dense-prefill fallback is used for
+      larger continuation chunks.
+    * <0: force low-memory mode; all scheduler-sized continuation chunks use
+      the compressed-cache decode path.
+    *  0: auto. Devices with >24 GiB total memory use the historical threshold
+      and reserve dense continuation scratch during profiling; devices with
+      <=24 GiB avoid the large max_model_len-sized scratch reservation.
     """
     configured = envs.VLLM_TQ_CONTINUATION_DECODE_THRESHOLD
-    if configured <= 0:
+    if configured > 0:
+        return configured
+    if configured < 0:
         return max_num_batched_tokens
-    return configured
+
+    total_memory = _get_device_total_memory(device)
+    if (
+        total_memory is not None
+        and total_memory > _LOW_MEMORY_TQ_CONTINUATION_CUTOFF_BYTES
+    ):
+        return _DEFAULT_CONTINUATION_DECODE_THRESHOLD
+    return max_num_batched_tokens
 
 _TQ_CONTINUATION_FALLBACK_BUFFERS: dict[
     tuple[str, int | None, int, int, torch.dtype],
@@ -200,7 +236,9 @@ def reserve_tq_continuation_buffers(
     memory budget calculation, so later large-context requests do not allocate
     it outside the configured ``--gpu-memory-utilization`` envelope.
     """
-    decode_threshold = get_tq_continuation_decode_threshold(max_num_batched_tokens)
+    decode_threshold = get_tq_continuation_decode_threshold(
+        max_num_batched_tokens, device
+    )
     if max_seq_len <= decode_threshold or max_num_batched_tokens <= decode_threshold:
         return 0
     alloc_len = math.ceil(max_seq_len / block_size) * block_size
@@ -872,7 +910,8 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
                 # For large continuations, fall back to _continuation_prefill.
                 cached_len = seq_len - q_len
                 decode_threshold = get_tq_continuation_decode_threshold(
-                    get_current_vllm_config().scheduler_config.max_num_batched_tokens
+                    get_current_vllm_config().scheduler_config.max_num_batched_tokens,
+                    query.device,
                 )
                 if q_len <= decode_threshold:
                     # Fast path: treat each query as a decode request

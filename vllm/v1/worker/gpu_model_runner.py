@@ -6319,7 +6319,9 @@ class GPUModelRunner(
         )
 
         block_size = self.cache_config.block_size
-        decode_threshold = get_tq_continuation_decode_threshold(self.max_num_tokens)
+        decode_threshold = get_tq_continuation_decode_threshold(
+            self.max_num_tokens, self.device
+        )
         if self.max_num_tokens <= decode_threshold:
             logger.info_once(
                 "TurboQuant continuation chunks up to %d tokens will use "

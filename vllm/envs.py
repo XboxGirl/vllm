@@ -1875,8 +1875,9 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Deprecated: use --linear-backend fbgemm instead.
     # TurboQuant continuation chunks with q_len at or below this threshold use
     # the compressed-cache decode kernel instead of dense full-dequant prefill.
-    # A value <= 0 means use the runtime max_num_batched_tokens, avoiding the
-    # large max_model_len-sized continuation scratch reservation.
+    # 0 means auto: use dense continuation scratch on GPUs with >24 GiB total
+    # memory, otherwise avoid the large max_model_len-sized scratch reservation.
+    # <0 always avoids dense continuation scratch; >0 is an explicit threshold.
     "VLLM_TQ_CONTINUATION_DECODE_THRESHOLD": lambda: int(
         os.getenv("VLLM_TQ_CONTINUATION_DECODE_THRESHOLD", "0")
     ),
