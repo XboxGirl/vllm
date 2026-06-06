@@ -582,6 +582,12 @@ class GPUModelRunner(
         # the last PP rank. This is not ideal if there are many
         # layers in the draft model.
         if self.speculative_config and get_pp_group().is_last_rank:
+            logger.debug(
+                "Initializing speculative decoding proposer: method=%s, "
+                "num_spec_tokens=%s.",
+                self.speculative_config.method,
+                self.speculative_config.num_speculative_tokens,
+            )
             self.drafter: (
                 NgramProposer  # noqa: F823
                 | NgramProposerGPU
@@ -657,6 +663,10 @@ class GPUModelRunner(
             self.rejection_sampler = RejectionSampler(
                 self.sampler, self.speculative_config, self.device
             )
+            logger.debug(
+                "Speculative decoding proposer initialized: %s.",
+                type(self.drafter).__name__,
+            )
 
         self.num_spec_tokens = 0
         self.valid_sampled_token_count_gpu: torch.Tensor | None = None
@@ -695,6 +705,15 @@ class GPUModelRunner(
         )
         self._init_block_sizes = [placeholder_block_size]
         self._init_kernel_block_sizes = [placeholder_block_size]
+        logger.debug(
+            "Initializing InputBatch: max_num_reqs=%d, max_model_len=%d, "
+            "max_num_tokens=%d, num_spec_tokens=%d, block_size=%d.",
+            self.max_num_reqs,
+            max(self.max_model_len, self.max_encoder_len),
+            self.max_num_tokens,
+            self.num_spec_tokens,
+            placeholder_block_size,
+        )
         self.input_batch = InputBatch(
             max_num_reqs=self.max_num_reqs,
             # We need to use the encoder length for encoder-decoder
@@ -724,6 +743,7 @@ class GPUModelRunner(
             cp_kv_cache_interleave_size=self.parallel_config.cp_kv_cache_interleave_size,
             reasoning_config=self.vllm_config.reasoning_config,
         )
+        logger.debug("InputBatch initialized.")
 
         # Separate cuda stream for overlapping transfer of sampled token ids from
         # GPU to CPU when async scheduling is enabled.
@@ -732,8 +752,10 @@ class GPUModelRunner(
         # when async scheduling is enabled.
         self.prepare_inputs_event: torch.Event | None = None
         if self.use_async_scheduling:
+            logger.debug("Initializing async scheduling stream/event.")
             self.async_output_copy_stream = torch.cuda.Stream()
             self.prepare_inputs_event = torch.Event()
+            logger.debug("Async scheduling stream/event initialized.")
 
         # self.cudagraph_batch_sizes sorts in ascending order.
         if (
@@ -747,13 +769,16 @@ class GPUModelRunner(
             self.cudagraph_batch_sizes = []
 
         # Cache the device properties.
+        logger.debug("Initializing device properties cache.")
         self._init_device_properties()
+        logger.debug("Device properties cache initialized.")
 
         # Encoder timing registry for observability
         self.encoder_timing_registry: dict[str, EncoderTimingStats] = {}
         self._encoder_timing_lock = threading.Lock()
 
         # Persistent buffers for CUDA graphs.
+        logger.debug("Initializing persistent model-runner buffers.")
         self.input_ids = self._make_buffer(self.max_num_tokens, dtype=torch.int32)
         self.positions = torch.zeros(
             self.max_num_tokens, dtype=torch.int64, device=self.device
@@ -836,6 +861,7 @@ class GPUModelRunner(
         self.arange_np = np.arange(arange_size, dtype=np.int64)
         self.query_pos = self._make_buffer(arange_size, dtype=torch.int64)
         self._arange_scratch = np.empty(arange_size, dtype=np.int64)
+        logger.debug("Persistent model-runner buffers initialized.")
 
         # Layer pairings for cross-layer KV sharing.
         # If an Attention layer `layer_name` is in the keys of this dict, it
@@ -908,6 +934,7 @@ class GPUModelRunner(
         self.draft_token_ids_cpu: torch.Tensor | None = None
         self.num_accepted_tokens_event: torch.Event | None = None
         if self.num_spec_tokens:
+            logger.debug("Initializing speculative decode copy buffers/events.")
             self.draft_token_ids_event = torch.Event()
             self.num_accepted_tokens_event = torch.Event()
             self.draft_token_ids_copy_stream = torch.cuda.Stream()
@@ -926,10 +953,13 @@ class GPUModelRunner(
                     device="cpu",
                     pin_memory=self.pin_memory,
                 )
+            logger.debug("Speculative decode copy buffers/events initialized.")
 
         # Model weight offloader
         # Make sure this is called before any get_offloader call
+        logger.debug("Initializing model weight offloader.")
         set_offloader(create_offloader(self.offload_config))
+        logger.debug("Model weight offloader initialized.")
 
         # Ephemeral state transferred between execute_model() and sample_tokens().
         self.execute_model_state: ExecuteModelState | None = None

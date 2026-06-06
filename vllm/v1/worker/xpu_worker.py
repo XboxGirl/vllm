@@ -102,7 +102,12 @@ class XPUWorker(Worker):
 
         # global all_reduce needed for overall oneccl warm up
         if torch.distributed.is_xccl_available():
-            torch.distributed.all_reduce(torch.zeros(1).xpu())
+            if self.parallel_config.world_size > 1:
+                logger.debug("Warming up oneCCL with a global all-reduce.")
+                torch.distributed.all_reduce(torch.zeros(1).xpu())
+                logger.debug("oneCCL global all-reduce warmup complete.")
+            else:
+                logger.debug("Skipping oneCCL all-reduce warmup for world_size=1.")
 
         if self.use_v2_model_runner:
             logger.info_once("Using V2 Model Runner")
@@ -124,13 +129,21 @@ class XPUWorker(Worker):
 
         # Initialize workspace manager
         num_ubatches = 2 if self.vllm_config.parallel_config.enable_dbo else 1
+        logger.debug(
+            "Initializing XPU workspace manager on %s with %d ubatch(es).",
+            self.device,
+            num_ubatches,
+        )
         init_workspace_manager(self.device, num_ubatches)
+        logger.debug("XPU workspace manager initialized.")
 
         # Construct the model runner
         model_runner = XPUModelRunnerV2 if self.use_v2_model_runner else XPUModelRunner
+        logger.debug("Constructing %s.", model_runner.__name__)
         self.model_runner = model_runner(  # type: ignore
             self.vllm_config, self.device
         )
+        logger.debug("XPU model runner constructed.")
 
         if self.rank == 0:
             # If usage stat is enabled, collect relevant info.
