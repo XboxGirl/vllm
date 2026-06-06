@@ -179,9 +179,13 @@ class MinTokensLogitsProcessor(LogitsProcessor):
             self._device_tensor([], torch.int32),
         )
 
-        self.neg_inf_tensor = torch.tensor(
-            -float("inf"), dtype=torch.float32, device=self.device
-        )
+        # Avoid constructing scalar tensors directly on accelerator devices
+        # during startup. Some XPU/Level Zero stacks can lose the device on
+        # torch.tensor(-inf, device="xpu") even though CPU->device tensor copies
+        # are fine. Materialize values lazily only when min-token masking is
+        # actually active.
+        self._neg_inf_values: torch.Tensor | None = None
+        self._neg_inf_values_dtype: torch.dtype | None = None
 
     def is_argmax_invariant(self) -> bool:
         """By censoring stop tokens, min-tokens can change the outcome
@@ -231,10 +235,34 @@ class MinTokensLogitsProcessor(LogitsProcessor):
             data, device="cpu", dtype=dtype, pin_memory=self.pin_memory
         ).to(device=self.device, non_blocking=True)
 
+    def _get_neg_inf_values(
+        self, num_values: int, dtype: torch.dtype
+    ) -> torch.Tensor:
+        values = self._neg_inf_values
+        if (
+            values is None
+            or values.numel() < num_values
+            or self._neg_inf_values_dtype != dtype
+        ):
+            values = torch.full(
+                (num_values,),
+                -float("inf"),
+                device="cpu",
+                dtype=dtype,
+                pin_memory=self.pin_memory,
+            ).to(device=self.device, non_blocking=True)
+            self._neg_inf_values = values
+            self._neg_inf_values_dtype = dtype
+        return values[:num_values]
+
     def apply(self, logits: torch.Tensor) -> torch.Tensor:
-        if self.min_toks:
+        num_values = self.logits_slice[0].numel() if self.min_toks else 0
+        if num_values:
             # Inhibit EOS token for requests which have not reached min length
-            logits.index_put_(self.logits_slice, self.neg_inf_tensor)
+            logits.index_put_(
+                self.logits_slice,
+                self._get_neg_inf_values(num_values, logits.dtype),
+            )
         return logits
 
     def apply_with_spec_decode(
@@ -286,7 +314,10 @@ class MinTokensLogitsProcessor(LogitsProcessor):
                 torch.from_numpy(rows_arr).to(self.device, non_blocking=True),
                 torch.from_numpy(toks_arr).to(self.device, non_blocking=True),
             )
-            logits.index_put_(logits_slice, self.neg_inf_tensor)
+            logits.index_put_(
+                logits_slice,
+                self._get_neg_inf_values(rows_arr.size, logits.dtype),
+            )
 
         return logits
 
