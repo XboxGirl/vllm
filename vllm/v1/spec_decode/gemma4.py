@@ -187,6 +187,18 @@ class Gemma4Proposer(SpecDecodeBaseProposer):
 
         super().load_model(target_model)
 
+        # The base proposer only records draft attention layers that own KV
+        # specs. Gemma4 MTP draft layers are Q-only and return None from
+        # get_kv_cache_spec(), but still need slot mappings and per-layer
+        # attention metadata to read the target model's shared KV cache.
+        all_attn_layers = get_layers_from_vllm_config(
+            self.vllm_config,
+            AttentionLayerBase,  # type: ignore[type-abstract]
+        )
+        self._draft_attn_layer_names = set(
+            all_attn_layers.keys()
+        ) - target_attn_layer_names
+
         self._setup_gemma4_kv_sharing(target_attn_layer_names)
 
         if getattr(self.model, "masked_embedding", None) is not None:
