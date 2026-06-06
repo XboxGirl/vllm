@@ -24,9 +24,25 @@ def _compute_bytes(shape: tuple[int, ...], dtype: torch.dtype) -> int:
 # Constants
 _MB = 1024**2
 _GiB = 1024**3
+_WORKSPACE_ALLOCATION_ALIGNMENT_BYTES = _MB
+_WORKSPACE_ALLOCATION_PADDING_BYTES = 256 * 1024
 
 # Global workspace manager instance
 _manager: "WorkspaceManager | None" = None
+
+
+def _allocation_size_bytes(required_bytes: int) -> int:
+    """Return the padded workspace allocation size for a request.
+
+    Warmup/profile requests can be off by a few tokens from later real
+    requests, especially around chunk-size boundaries. Allocate a small cushion
+    while the workspace is still unlocked so locked execution does not fail on
+    near-identical shapes that differ by only a few KiB.
+    """
+    return round_up(
+        required_bytes + _WORKSPACE_ALLOCATION_PADDING_BYTES,
+        _WORKSPACE_ALLOCATION_ALIGNMENT_BYTES,
+    )
 
 
 class WorkspaceManager:
@@ -196,18 +212,20 @@ class WorkspaceManager:
             # dead segment in reserved memory which can cause higher peak
             # memory usage.
             torch.accelerator.empty_cache()
+            allocation_bytes = _allocation_size_bytes(required_bytes)
             self._current_workspaces[ubatch_id] = torch.empty(
-                (required_bytes,), dtype=torch.uint8, device=self._device
+                (allocation_bytes,), dtype=torch.uint8, device=self._device
             )
             current_workspace = self._current_workspaces[ubatch_id]
 
             if envs.VLLM_DEBUG_WORKSPACE:
                 logger.info(
                     "[WORKSPACE DEBUG] Resized workspace from '%s': %.2f MB -> "
-                    "%.2f MB (ubatch %d)",
+                    "%.2f MB requested, %.2f MB allocated (ubatch %d)",
                     get_caller_info(),
                     current_size / _MB,
                     required_bytes / _MB,
+                    allocation_bytes / _MB,
                     ubatch_id,
                 )
 
