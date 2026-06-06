@@ -151,20 +151,23 @@ class CompressedTensorsWNA16(CompressedTensorsScheme):
                 dtype=params_dtype,
             ),
         }
-
-        zeros_args = {
-            "weight_loader": weight_loader,
-            "data": torch.zeros(
-                output_size_per_partition // self.pack_factor,
-                scales_and_zp_size,
-                dtype=torch.int32,
-            ),
-        }
+        qzeros: PackedColumnParameter | PackedvLLMParameter | None = None
 
         if not partition_scales:
             weight_scale = ChannelQuantScaleParameter(output_dim=0, **weight_scale_args)
 
             if not self.symmetric:
+                zeros_args = {
+                    "weight_loader": weight_loader,
+                    # Zero-point values are checkpoint-loaded. Avoid eager
+                    # accelerator zero-fill during model construction, and do
+                    # not allocate this storage at all for symmetric WNA16.
+                    "data": torch.empty(
+                        output_size_per_partition // self.pack_factor,
+                        scales_and_zp_size,
+                        dtype=torch.int32,
+                    ),
+                }
                 qzeros = PackedColumnParameter(
                     output_dim=0,
                     packed_dim=0,
@@ -176,6 +179,17 @@ class CompressedTensorsWNA16(CompressedTensorsScheme):
                 output_dim=0, input_dim=1, **weight_scale_args
             )
             if not self.symmetric:
+                zeros_args = {
+                    "weight_loader": weight_loader,
+                    # Zero-point values are checkpoint-loaded. Avoid eager
+                    # accelerator zero-fill during model construction, and do
+                    # not allocate this storage at all for symmetric WNA16.
+                    "data": torch.empty(
+                        output_size_per_partition // self.pack_factor,
+                        scales_and_zp_size,
+                        dtype=torch.int32,
+                    ),
+                }
                 qzeros = PackedvLLMParameter(
                     input_dim=1,
                     output_dim=0,
@@ -195,6 +209,7 @@ class CompressedTensorsWNA16(CompressedTensorsScheme):
         layer.register_parameter("weight_shape", weight_shape)
 
         if not self.symmetric:
+            assert qzeros is not None
             layer.register_parameter("weight_zero_point", qzeros)
 
         # group index (for activation reordering)
