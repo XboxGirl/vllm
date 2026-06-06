@@ -25,6 +25,7 @@ import torch
 import torch.nn.functional as F
 
 import vllm.envs as envs
+from vllm.config import get_current_vllm_config
 from vllm.config.cache import CacheDType
 from vllm.model_executor.layers.quantization.turboquant.centroids import (
     get_centroids,
