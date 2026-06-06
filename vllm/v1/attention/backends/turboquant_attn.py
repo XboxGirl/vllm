@@ -25,7 +25,6 @@ import torch
 import torch.nn.functional as F
 
 import vllm.envs as envs
-from vllm.config import get_current_vllm_config
 from vllm.config.cache import CacheDType
 from vllm.model_executor.layers.quantization.turboquant.centroids import (
     get_centroids,
@@ -481,6 +480,9 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
         self.max_num_kv_splits = (
             vllm_config.attention_config.tq_max_kv_splits_for_cuda_graph
         )
+        self.max_num_batched_tokens = (
+            vllm_config.scheduler_config.max_num_batched_tokens
+        )
 
     def _flash_attn_varlen(
         self,
@@ -910,8 +912,7 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
                 # For large continuations, fall back to _continuation_prefill.
                 cached_len = seq_len - q_len
                 decode_threshold = get_tq_continuation_decode_threshold(
-                    get_current_vllm_config().scheduler_config.max_num_batched_tokens,
-                    query.device,
+                    self.max_num_batched_tokens, query.device
                 )
                 if q_len <= decode_threshold:
                     # Fast path: treat each query as a decode request
