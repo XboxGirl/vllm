@@ -1787,10 +1787,19 @@ class EngineArgs:
             and "gemma" in str(spec_model).lower()
             and "assistant" in str(spec_model).lower()
         )
+        hf_model_type = str(getattr(model_config.hf_config, "model_type", "")).lower()
+        hf_text_model_type = str(
+            getattr(model_config.hf_text_config, "model_type", "")
+        ).lower()
+        is_interleaved_gemma4 = (
+            ("gemma4" in hf_model_type or "gemma4" in hf_text_model_type)
+            and is_interleaved(model_config.hf_text_config)
+        )
 
         if (
             resolved_cache_dtype.startswith("turboquant_")
             and not is_gemma4_mtp_spec_decode
+            and not is_interleaved_gemma4
         ):
             from vllm.model_executor.layers.quantization.turboquant.config import (
                 TurboQuantConfig,
@@ -1802,10 +1811,16 @@ class EngineArgs:
                 existing | set(boundary), key=int
             )
         elif resolved_cache_dtype.startswith("turboquant_"):
-            logger.info(
-                "Disabling TurboQuant boundary KV skip for Gemma4 MTP "
-                "speculative decoding to keep target KV cache layout uniform."
-            )
+            if is_gemma4_mtp_spec_decode:
+                logger.info(
+                    "Disabling TurboQuant boundary KV skip for Gemma4 MTP "
+                    "speculative decoding to keep target KV cache layout uniform."
+                )
+            else:
+                logger.info(
+                    "Disabling TurboQuant boundary KV skip for interleaved "
+                    "Gemma4 layout to keep hybrid KV cache groups uniform."
+                )
 
         ray_runtime_env = None
         if is_ray_initialized():
