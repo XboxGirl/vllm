@@ -33,15 +33,17 @@ from transformers.models.gemma4.configuration_gemma4 import (
     Gemma4TextConfig,
 )
 
-from vllm.config import VllmConfig
+from vllm.config import ModelConfig, SpeechToTextConfig, VllmConfig
 from vllm.config.multimodal import BaseDummyOptions, VideoDummyOptions
-from vllm.inputs import MultiModalDataDict
+from vllm.config.speech_to_text import SpeechToTextParams
+from vllm.inputs import MultiModalDataDict, PromptType, TextPrompt
 from vllm.logger import init_logger
 from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.linear import ReplicatedLinear
 from vllm.model_executor.models.gemma4 import Gemma4ForCausalLM
 from vllm.model_executor.models.module_mapping import MultiModelKeys
 from vllm.model_executor.models.transformers.utils import recursive_replace_linear
+from vllm.model_executor.models.whisper import ISO639_1_SUPPORTED_LANGS
 from vllm.multimodal import MULTIMODAL_REGISTRY
 from vllm.multimodal.inputs import (
     MultiModalFieldConfig,
@@ -64,6 +66,7 @@ from vllm.multimodal.processing.processor import (
 )
 from vllm.platforms import current_platform
 from vllm.sequence import IntermediateTensors
+from vllm.transformers_utils.processor import cached_processor_from_config
 from vllm.utils.tensor_schema import TensorSchema, TensorShape
 
 from .interfaces import (
@@ -73,6 +76,7 @@ from .interfaces import (
     SupportsMultiModal,
     SupportsPP,
     SupportsQuant,
+    SupportsTranscription,
 )
 from .utils import (
     AutoWeightsLoader,
@@ -974,7 +978,10 @@ class Gemma4ForConditionalGeneration(
     SupportsPP,
     SupportsLoRA,
     SupportsEagle3,
+    SupportsTranscription,
 ):
+    supported_languages = ISO639_1_SUPPORTED_LANGS
+
     packed_modules_mapping = {
         "qkv_proj": [
             "q_proj",
@@ -1011,14 +1018,17 @@ class Gemma4ForConditionalGeneration(
         self.config = config
         self.quant_config = quant_config
         self.multimodal_config = multimodal_config
+        self.model_dtype = vllm_config.model_config.dtype
 
         # Only quantize towers when the quant method supports their
         # dimensions.  BNB/torchao handle arbitrary sizes; other methods
         # (Marlin, FP8, …) require dimensions divisible by 64, which
         # the vision tower (intermediate_size=4304) does not satisfy.
+        # TODO(mgoin): remove this by fixing kernel padding.
         if quant_config and quant_config.get_name() in [
             "bitsandbytes",
             "torchao",
+            "compressed-tensors",
         ]:
             tower_quant = quant_config
         else:
@@ -1081,12 +1091,13 @@ class Gemma4ForConditionalGeneration(
             # Some variants have hidden_size_per_layer_input=None (no PLE).
             ple_dim = config.text_config.hidden_size_per_layer_input
             if ple_dim is not None and ple_dim > 0:
+                embed = self.language_model.model.embed_tokens
                 self.per_layer_embeddings = torch.zeros(
                     vllm_config.scheduler_config.max_num_batched_tokens,
                     config.text_config.num_hidden_layers,
                     ple_dim,
-                    device=self.language_model.model.embed_tokens.weight.device,
-                    dtype=self.language_model.model.embed_tokens.weight.dtype,
+                    device=next(embed.parameters()).device,
+                    dtype=vllm_config.model_config.dtype,
                 )
             else:
                 self.per_layer_embeddings = None
@@ -1246,7 +1257,6 @@ class Gemma4ForConditionalGeneration(
         vt = self.vision_tower
         vision_cfg = self.config.vision_config
         pooling_k2 = vision_cfg.pooling_kernel_size**2
-        target_dtype = self.language_model.model.embed_tokens.weight.dtype
 
         # Concurrent requests with different image resolutions may
         # arrive as a list of per-image tensors, while same-resolution
@@ -1291,7 +1301,7 @@ class Gemma4ForConditionalGeneration(
                     pv_tensor,
                     pp_tensor,
                     pad_tensor,
-                ).to(target_dtype)
+                ).to(self.model_dtype)
                 encoder_outputs = vt.encoder(
                     inputs_embeds=inputs_embeds,
                     attention_mask=~pad_tensor,
@@ -1328,12 +1338,8 @@ class Gemma4ForConditionalGeneration(
             all_valid_states[orig_idx] = valid_states
             valid_lens[orig_idx] = valid_states.shape[0]
 
-        # Use embed_tokens dtype as compute dtype; embedding_projection.weight
-        # may be uint8 under BnB 4-bit, which would corrupt the cast.
-        target_dtype = self.language_model.model.embed_tokens.weight.dtype
-
         # Project all images in a single batched call.
-        flat_valid_states = torch.cat(all_valid_states, dim=0).to(target_dtype)
+        flat_valid_states = torch.cat(all_valid_states, dim=0).to(self.model_dtype)
         flat_proj_embs = self.embed_vision(
             inputs_embeds=flat_valid_states.unsqueeze(0)
         ).squeeze(0)
@@ -1373,7 +1379,6 @@ class Gemma4ForConditionalGeneration(
         vt = self.vision_tower
         vision_cfg = self.config.vision_config
         pooling_k2 = vision_cfg.pooling_kernel_size**2
-        target_dtype = self.language_model.model.embed_tokens.weight.dtype
 
         if isinstance(frame_counts, torch.Tensor):
             fc_list = frame_counts.tolist()
@@ -1405,7 +1410,7 @@ class Gemma4ForConditionalGeneration(
                 pv_chunk,
                 pp_chunk,
                 pad_chunk,
-            ).to(target_dtype)
+            ).to(self.model_dtype)
             encoder_outputs = vt.encoder(
                 inputs_embeds=inputs_embeds,
                 attention_mask=~pad_chunk,
@@ -1440,7 +1445,9 @@ class Gemma4ForConditionalGeneration(
             frame_valid_lens.append(valid_states.shape[0])
 
         # Project all frames in a single batched call.
-        flat_valid_states = torch.cat(all_frame_valid_states, dim=0).to(target_dtype)
+        flat_valid_states = torch.cat(all_frame_valid_states, dim=0).to(
+            self.model_dtype
+        )
         flat_proj_embs = self.embed_vision(
             inputs_embeds=flat_valid_states.unsqueeze(0)
         ).squeeze(0)
@@ -1704,3 +1711,61 @@ class Gemma4ForConditionalGeneration(
         if modality == "video":
             return "<|video|>"
         raise ValueError(f"Unsupported modality: {modality}")
+
+    @classmethod
+    def get_generation_prompt(cls, stt_params: SpeechToTextParams) -> PromptType:
+        audio = stt_params.audio
+        stt_config = stt_params.stt_config
+        language = stt_params.language
+        task_type = stt_params.task_type
+        to_language = stt_params.to_language
+
+        prompt = "<bos><|turn>user\n"
+        prompt += "Transcribe" if task_type == "transcribe" else "Translate"
+        prompt += " this audio"
+
+        full_lang_name = cls.supported_languages.get(language, "")
+        full_lang_name_to = cls.supported_languages.get(to_language, "")
+
+        if task_type == "transcribe" and full_lang_name:
+            prompt += f" into {full_lang_name}"
+        elif task_type == "translate":
+            if full_lang_name:
+                prompt += f" from {full_lang_name}"
+            if full_lang_name_to:
+                prompt += f" into {full_lang_name_to}"
+
+        prompt += ": <|audio|><turn|>\n<|turn>model\n"
+
+        return TextPrompt(
+            prompt=prompt,
+            multi_modal_data={"audio": (audio, stt_config.sample_rate)},
+        )
+
+    @classmethod
+    def get_speech_to_text_config(
+        cls, model_config: ModelConfig, task_type: str
+    ) -> SpeechToTextConfig:
+        processor = cached_processor_from_config(model_config)
+        feature_extractor = processor.feature_extractor
+        max_audio_clip_s = math.floor(
+            processor.audio_seq_length * processor.audio_ms_per_token / 1000
+        )
+        return SpeechToTextConfig(
+            max_audio_clip_s=max_audio_clip_s,
+            sample_rate=feature_extractor.sampling_rate,
+            min_energy_split_window_size=None,
+        )
+
+    @classmethod
+    def get_num_audio_tokens(
+        cls,
+        audio_duration_s: float,
+        stt_config: SpeechToTextConfig,
+        model_config: ModelConfig,
+    ) -> int | None:
+        processor = cached_processor_from_config(model_config)
+        num_audio_tokens = math.ceil(
+            audio_duration_s * 1000 / processor.audio_ms_per_token
+        )
+        return min(num_audio_tokens, processor.audio_seq_length) + 2

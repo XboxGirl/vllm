@@ -504,7 +504,10 @@ class GPUModelRunner(
         self.use_async_scheduling = self.scheduler_config.async_scheduling
 
         # Sampler
-        self.sampler = Sampler(logprobs_mode=self.model_config.logprobs_mode)
+        self.sampler = Sampler(
+            logprobs_mode=self.model_config.logprobs_mode,
+            use_fp64_gumbel=self.model_config.use_fp64_gumbel,
+        )
 
         self.eplb_state: EplbState | None = None
         self._moe_model: MixtureOfExperts | None = None
@@ -1875,9 +1878,8 @@ class GPUModelRunner(
         SpecDecodeMetadata | None,
     ]:
         """
-        :return: tuple[
-            logits_indices, spec_decode_metadata,
-        ]
+        Returns:
+            tuple[logits_indices, spec_decode_metadata]
         """
         total_num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
         assert total_num_scheduled_tokens > 0
@@ -2202,7 +2204,8 @@ class GPUModelRunner(
         slot_mappings: dict[int, torch.Tensor] | None = None,
     ) -> tuple[PerLayerAttnMetadata, CommonAttentionMetadata | None]:
         """
-        :return: tuple[attn_metadata, spec_decode_common_attn_metadata]
+        Returns:
+            tuple[attn_metadata, spec_decode_common_attn_metadata]
         """
         # Attention metadata is not needed for attention free models
         if len(self.kv_cache_config.kv_cache_groups) == 0:
@@ -2500,9 +2503,11 @@ class GPUModelRunner(
         num_common_prefix_blocks: list[int],
     ) -> list[list[int]] | None:
         """
-        :return: Optional[cascade_attn_prefix_lens]
-            cascade_attn_prefix_lens is 2D: ``[kv_cache_group_id][attn_group_idx]``,
-            None if we should not use cascade attention
+        Returns:
+            Optional[cascade_attn_prefix_lens]
+                cascade_attn_prefix_lens is 2D:
+                ``[kv_cache_group_id][attn_group_idx]``,
+                None if we should not use cascade attention
         """
 
         use_cascade_attn = False
@@ -5321,11 +5326,12 @@ class GPUModelRunner(
         """
         Reload weights from a weights iterator or from disk
 
-        :param weights_iterator: weights to load into model
-        :param weights_path: path to load weights from if weights_iterator is not
-            provided. Use path of original model if neither is provided.
-        :param is_checkpoint_format: set to False if weights have already been processed
-            into kernel format (repacking, renaming, etc.)
+        Args:
+            weights_iterator: weights to load into model
+            weights_path: path to load weights from if weights_iterator is not
+                provided. Use path of original model if neither is provided.
+            is_checkpoint_format: set to False if weights have already been
+                processed into kernel format (repacking, renaming, etc.)
         """
         # TODO(@kylesayrs): generalize to all runners and loaders
         # argument validation
@@ -5787,6 +5793,9 @@ class GPUModelRunner(
                     num_scheduled_tokens, self.query_pos.np
                 )
                 self.query_start_loc.np[1 : num_reqs + 1] = cum_num_tokens
+                self.query_start_loc.np[num_reqs + 1 : num_reqs_padded + 1].fill(
+                    cum_num_tokens[-1]
+                )
                 self.query_start_loc.copy_to_gpu()
 
                 # Sync block table CPU->GPU so cleared rows from
@@ -6037,7 +6046,17 @@ class GPUModelRunner(
             else:
                 raise e
         if self.speculative_config:
-            draft_token_ids = [[0] for _ in range(num_reqs)]
+            # Use real num_speculative_tokens for warmup so the KV-cache
+            # profile and workspace allocation account for peak
+            # rejection-sampler footprint (vllm#37521).
+            _k = getattr(
+                self.speculative_config, 'num_speculative_tokens', 0
+            ) or 0
+            if _k > 1:
+                _dummy_tokens = list(range(_k))
+            else:
+                _dummy_tokens = [0]
+            draft_token_ids = [_dummy_tokens for _ in range(num_reqs)]
             dummy_spec_decode_metadata = SpecDecodeMetadata.make_dummy(
                 draft_token_ids, self.device
             )
@@ -7174,17 +7193,21 @@ class GPUModelRunner(
                     raw_tensor = kv_cache_raw_tensors[layer_name].view(dtype)
                     if kv_cache_spec.page_size_padded is not None:
                         # Use strided view to handle page_size_bytes that
-                        # include padding. This follows
-                        # the same pattern as MambaSpec handling below.
-                        # NOTE: This assumes kv_cache_shape[0] == num_blocks
-                        # (i.e. the first physical dimension is the block
-                        # index), which holds for MLA backends but NOT for
-                        # standard attention backends whose shape starts with
-                        # a K/V dimension of size 2.
+                        # include padding. This follows the same pattern as
+                        # MambaSpec handling below, but uses the backend's
+                        # reported block dimension so it also works for
+                        # standard attention layouts.
                         dtype_size = get_dtype_size(dtype)
                         page_stride = kv_cache_spec.page_size_bytes // dtype_size
+                        block_dim = attn_backend.get_kv_cache_block_dim(
+                            shape_block_size,
+                            kv_cache_spec.num_kv_heads,
+                            kv_cache_spec.head_size,
+                            cache_dtype_str=self.cache_config.cache_dtype,
+                        )
+                        physical_block_dim = kv_cache_stride_order.index(block_dim)
                         strides = list(torch.empty(kv_cache_shape).stride())
-                        strides[inv_order[0]] = page_stride
+                        strides[physical_block_dim] = page_stride
                         kv_cache = torch.as_strided(
                             raw_tensor,
                             size=kv_cache_shape,

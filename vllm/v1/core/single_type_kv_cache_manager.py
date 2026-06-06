@@ -24,6 +24,7 @@ from vllm.v1.kv_cache_interface import (
     SlidingWindowMLASpec,
     SlidingWindowSpec,
     TQFullAttentionSpec,
+    TQSlidingWindowSpec,
 )
 from vllm.v1.kv_cache_spec_registry import KVCacheSpecRegistry
 from vllm.v1.request import Request
@@ -1386,6 +1387,11 @@ def register_all_kvcache_specs(vllm_config):
         TQFullAttentionSpec,
         FullAttentionManager,
         uniform_type_base_spec=FullAttentionSpec,
+    )
+    KVCacheSpecRegistry.register(
+        TQSlidingWindowSpec,
+        SlidingWindowManager,
+        uniform_type_base_spec=SlidingWindowSpec,
     )
     KVCacheSpecRegistry.register(
         MLAAttentionSpec, FullAttentionManager, uniform_type_base_spec=FullAttentionSpec

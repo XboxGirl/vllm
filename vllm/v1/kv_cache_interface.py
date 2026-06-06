@@ -342,11 +342,18 @@ class TQFullAttentionSpec(FullAttentionSpec):
 
     @classmethod
     def merge(cls, specs: list[Self]) -> Self:
-        merged = super().merge(specs)
+        assert all(isinstance(spec, TQFullAttentionSpec) for spec in specs), (
+            "All TQ full-attention layers in the same KV cache group must be "
+            "TQFullAttentionSpec."
+        )
+        assert all(spec == specs[0] for spec in specs[1:]), (
+            "All TQ full-attention layers in the same KV cache group must "
+            "have the same attention spec."
+        )
         assert all(s.tq_slot_size == specs[0].tq_slot_size for s in specs), (
             "All TQ layers in the same KV cache group must use the same tq_slot_size."
         )
-        return replace(merged, tq_slot_size=specs[0].tq_slot_size)
+        return copy.deepcopy(specs[0])
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -547,10 +554,12 @@ class SlidingWindowMLASpec(SlidingWindowSpec):
 
     @property
     def real_page_size_bytes(self) -> int:
-        if self.model_version == "deepseek_v4":
-            # DeepseekV4: 448B NoPE + 128B RoPE + 8B fp8 scale = 584B per token.
+        if self.model_version == "deepseek_v4" and self.cache_dtype_str == "fp8_ds_mla":
+            # DeepseekV4 FlashMLA: 448B NoPE + 128B RoPE + 8B fp8 scale = 584B
+            # per token. FlashInfer's contiguous bf16/fp8 cache falls through to
+            # the element-size formula below.
             return self.storage_block_size * 584
-        assert self.model_version is None, (
+        assert self.model_version in (None, "deepseek_v4"), (
             f"Unsupported model version: {self.model_version}"
         )
         return (
@@ -600,6 +609,35 @@ class SlidingWindowMLASpec(SlidingWindowSpec):
             and spec.sliding_window == self.sliding_window
             for spec in kv_cache_specs.values()
         )
+
+
+@dataclass(frozen=True, kw_only=True)
+class TQSlidingWindowSpec(SlidingWindowSpec):
+    """SlidingWindowSpec with TQ-aware packed page size."""
+
+    tq_slot_size: int = 0
+
+    @property
+    def real_page_size_bytes(self) -> int:
+        if self.tq_slot_size > 0:
+            return self.block_size * self.num_kv_heads * self.tq_slot_size
+        return super().real_page_size_bytes
+
+    @classmethod
+    def merge(cls, specs: list[Self]) -> Self:
+        assert all(isinstance(spec, TQSlidingWindowSpec) for spec in specs), (
+            "All TQ sliding-window layers in the same KV cache group must be "
+            "TQSlidingWindowSpec."
+        )
+        assert all(spec == specs[0] for spec in specs[1:]), (
+            "All TQ sliding-window layers in the same KV cache group must "
+            "have the same attention spec."
+        )
+        assert all(s.tq_slot_size == specs[0].tq_slot_size for s in specs), (
+            "All TQ sliding-window layers in the same KV cache group must use "
+            "the same tq_slot_size."
+        )
+        return copy.deepcopy(specs[0])
 
 
 @dataclass(frozen=True)

@@ -57,6 +57,8 @@ from .utils import (
 
 logger = init_logger(__name__)
 
+_PENDING_KV_SHARING_TARGET = "__gemma4_mtp_pending_kv_sharing_target__"
+
 
 class Gemma4MTPMaskedEmbedder(nn.Module):
     """Sparse logit computation via centroid-based vocabulary masking.
@@ -230,6 +232,12 @@ class Gemma4MTPAttention(nn.Module):
             per_layer_sliding_window=sliding_window,
             prefix=f"{prefix}.attn",
         )
+        # Gemma4 MTP layers are Q-only: they never own KV cache and must not
+        # contribute standalone KV specs.  The proposer overwrites this
+        # placeholder with the actual target layer after both models are loaded.
+        self.attn.kv_sharing_target_layer_name = _PENDING_KV_SHARING_TARGET
+        if hasattr(self.attn.impl, "kv_sharing_target_layer_name"):
+            self.attn.impl.kv_sharing_target_layer_name = _PENDING_KV_SHARING_TARGET
 
     def forward(
         self,

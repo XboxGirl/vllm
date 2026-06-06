@@ -30,14 +30,14 @@ def postprocess_mamba_fused_kernel(
     num_scheduled_tokens_ptr,
     num_computed_tokens_ptr,
     num_draft_tokens_ptr,
-    # Per-group block table base addresses: int64[num_groups]. Each entry is
+    # Per-group block table base addresses: uint64[num_groups]. Each entry is
     # the data_ptr of that group's persistent [max_reqs, max_blocks] int32
     # block table.
     block_table_ptrs_ptr,
     block_table_stride_req: tl.int64,  # stride between requests (in elements)
     # Mamba state metadata (per-layer, per-state-type)
     # These are 1D arrays indexed by (layer_idx * num_state_types + state_type_idx)
-    state_base_addrs_ptr,  # base address of each state tensor
+    state_base_addrs_ptr,  # uint64 base address of each state tensor
     state_block_strides_ptr,  # bytes per block for each state
     state_elem_sizes_ptr,  # element size for each state
     state_inner_sizes_ptr,  # number of elements in inner dimensions
@@ -239,8 +239,10 @@ class MambaCopyBuffers:
         ) * len(copy_funcs)
         n = max_num_reqs * entries_per_req
         return cls(
-            src_ptrs=make_buffer(n, dtype=torch.int64),
-            dst_ptrs=make_buffer(n, dtype=torch.int64),
+            # Raw device addresses can use the high bit on XPU, so store
+            # pointer bit patterns as unsigned 64-bit values.
+            src_ptrs=make_buffer(n, dtype=torch.uint64),
+            dst_ptrs=make_buffer(n, dtype=torch.uint64),
             sizes=make_buffer(n, dtype=torch.int32),
             mamba_group_ids=mamba_group_ids,
             mamba_spec=mamba_spec,
@@ -265,7 +267,7 @@ class MambaSpecDecodeGPUContext:
 
     # Per-state metadata tensors (shape: [num_layers * num_state_types])
     # These are populated from forward_context during the first forward pass
-    state_base_addrs: torch.Tensor  # int64: base address of each state tensor
+    state_base_addrs: torch.Tensor  # uint64: base address of each state tensor
     state_block_strides: torch.Tensor  # int64: bytes per block
     state_elem_sizes: torch.Tensor  # int32: element size in bytes
     state_inner_sizes: torch.Tensor  # int64: elements in inner dimensions
@@ -321,7 +323,7 @@ class MambaSpecDecodeGPUContext:
 
         return cls(
             state_base_addrs=torch.zeros(
-                total_states, dtype=torch.int64, device=device
+                total_states, dtype=torch.uint64, device=device
             ),
             state_block_strides=torch.zeros(
                 total_states, dtype=torch.int64, device=device
@@ -347,7 +349,7 @@ class MambaSpecDecodeGPUContext:
                 max_num_reqs, dtype=torch.int32, device=device
             ),
             block_table_ptrs=torch.zeros(
-                len(mamba_group_ids), dtype=torch.int64, device=device
+                len(mamba_group_ids), dtype=torch.uint64, device=device
             ),
             mamba_state_idx_buf=make_buffer(max_num_reqs, dtype=torch.int32),
             num_scheduled_tokens_buf=make_buffer(max_num_reqs, dtype=torch.int32),
@@ -668,6 +670,8 @@ def preprocess_mamba(
             # new / resumed request, no previous state
             # if num_computed_tokens is 0, prev_state_idx will be -1
             prev_state_idx = (req_state.num_computed_tokens - 1) // block_size
+        assert prev_state_idx is not None
+        prev_state_idx = int(prev_state_idx)
 
         num_scheduled_tokens = scheduler_output.num_scheduled_tokens[req_id]
         num_blocks: int = (
