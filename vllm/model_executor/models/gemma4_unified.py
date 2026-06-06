@@ -70,13 +70,12 @@ _DEFAULT_UNIFIED_IMAGE_SOFT_TOKENS = 280
 def _get_unified_image_soft_tokens(vision_config: object | None) -> int:
     """Return the max image soft-token count for Gemma4 Unified configs.
 
-    Transformers Gemma4 Unified config schemas have used both
-    ``num_soft_tokens`` and the tower-style ``default_output_length`` field.
-    Some text/QAT checkpoints still carry a unified vision config object but
-    omit ``num_soft_tokens`` entirely, so avoid failing server startup while
-    computing the multimodal budget.
+    Transformers Gemma4 Unified config schemas have used multiple field names
+    for this budget. The QAT W4A16 checkpoints omit ``num_soft_tokens`` and
+    ``default_output_length`` but expose ``mm_posemb_size``, which is the max
+    soft-token position table size and matches the supported max token values.
     """
-    for attr in ("num_soft_tokens", "default_output_length"):
+    for attr in ("num_soft_tokens", "default_output_length", "mm_posemb_size"):
         value = getattr(vision_config, attr, None)
         if isinstance(value, int) and value > 0:
             return value
@@ -100,7 +99,8 @@ class Gemma4UnifiedVisionEmbedder(nn.Module):
 
     def __init__(self, config, quant_config=None, prefix=""):
         super().__init__()
-        patch_dim = config.model_patch_size**2 * 3
+        model_patch_size = getattr(config, "model_patch_size", config.patch_size)
+        patch_dim = model_patch_size**2 * 3
         mm_embed_dim = config.mm_embed_dim
 
         self.patch_ln1 = nn.LayerNorm(patch_dim)
