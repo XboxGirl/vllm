@@ -88,6 +88,19 @@ def _get_unified_image_soft_tokens(vision_config: object | None) -> int:
 # ---------------------------------------------------------------------------
 
 
+class _CheckpointLoadedLayerNorm(nn.LayerNorm):
+    """LayerNorm whose parameters are loaded from the checkpoint.
+
+    vLLM constructs modules under the target accelerator device. Avoid eager
+    reset/fill kernels for parameters that checkpoint loading overwrites; this
+    is especially important on XPU, where tiny fill kernels during startup can
+    exhaust Level Zero resources after large runner buffers are allocated.
+    """
+
+    def reset_parameters(self) -> None:
+        return None
+
+
 class Gemma4UnifiedVisionEmbedder(nn.Module):
     """Encoder-free vision embedder for Gemma4 Unified variants.
 
@@ -104,7 +117,11 @@ class Gemma4UnifiedVisionEmbedder(nn.Module):
         patch_dim = model_patch_size**2 * 3
         mm_embed_dim = config.mm_embed_dim
 
-        self.patch_ln1 = nn.LayerNorm(patch_dim)
+        # The model loader constructs modules under the target accelerator
+        # device. Avoid eager fill/zero init kernels for these checkpoint-loaded
+        # parameters; on XPU, LayerNorm.reset_parameters() can exhaust Level Zero
+        # resources during startup before weights are loaded.
+        self.patch_ln1 = _CheckpointLoadedLayerNorm(patch_dim)
         self.patch_dense = ColumnParallelLinear(
             patch_dim,
             mm_embed_dim,
@@ -113,12 +130,12 @@ class Gemma4UnifiedVisionEmbedder(nn.Module):
             prefix=f"{prefix}.patch_dense",
             gather_output=True,
         )
-        self.patch_ln2 = nn.LayerNorm(mm_embed_dim)
+        self.patch_ln2 = _CheckpointLoadedLayerNorm(mm_embed_dim)
 
         self.pos_embedding = nn.Parameter(
-            torch.zeros(config.mm_posemb_size, 2, mm_embed_dim)
+            torch.empty(config.mm_posemb_size, 2, mm_embed_dim)
         )
-        self.pos_norm = nn.LayerNorm(mm_embed_dim)
+        self.pos_norm = _CheckpointLoadedLayerNorm(mm_embed_dim)
 
     def _factorized_posemb(self, positions_xy: torch.Tensor) -> torch.Tensor:
         clamped_pos = positions_xy.clamp(min=0).long()
