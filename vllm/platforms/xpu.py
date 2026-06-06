@@ -310,7 +310,11 @@ class XPUPlatform(Platform):
     def get_current_memory_usage(
         cls, device: torch.types.Device | None = None
     ) -> float:
-        torch.xpu.empty_cache()
+        # Do not call torch.xpu.empty_cache() here. Unlike CUDA/ROCm, some
+        # Level Zero stacks can report UR_RESULT_ERROR_DEVICE_LOST when the
+        # allocator cache is flushed during startup/model-load profiling. This
+        # method reports allocated bytes, not reserved bytes, so flushing the
+        # cache is unnecessary for DeviceMemoryProfiler's delta accounting.
         torch.xpu.reset_peak_memory_stats(device)
         return torch.xpu.max_memory_allocated(device)
 
