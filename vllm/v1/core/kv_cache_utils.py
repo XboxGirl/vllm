@@ -17,6 +17,7 @@ from vllm.config import VllmConfig
 from vllm.logger import init_logger
 from vllm.utils.hashing import sha256_cbor, xxhash_cbor
 from vllm.utils.math_utils import cdiv, round_up
+from vllm.utils.mem_constants import GiB_bytes
 from vllm.utils.mem_utils import format_gib
 from vllm.utils.torch_utils import get_dtype_size
 from vllm.v1.kv_cache_interface import (
@@ -1826,6 +1827,40 @@ def _max_memory_usage_bytes_from_groups(
     return group_size * page_size * blocks_needed
 
 
+def _log_kv_cache_group_memory_plan(
+    vllm_config: VllmConfig,
+    kv_cache_groups: list[KVCacheGroupSpec],
+    available_memory: int,
+) -> None:
+    """Log resolved KV group sizing inputs for startup memory checks."""
+    if not kv_cache_groups:
+        return
+
+    needed_memory = _max_memory_usage_bytes_from_groups(vllm_config, kv_cache_groups)
+    logger.info(
+        "KV cache memory plan: available=%.2f GiB needed=%.2f GiB groups=%d",
+        available_memory / GiB_bytes,
+        needed_memory / GiB_bytes,
+        len(kv_cache_groups),
+    )
+    for i, group in enumerate(kv_cache_groups):
+        spec = group.kv_cache_spec
+        max_bytes = spec.max_memory_usage_bytes(vllm_config)
+        logger.info(
+            "KV group %d: type=%s layers=%d block_size=%s page=%d "
+            "max_pages=%d max_bytes=%.2f MiB padded=%s sliding_window=%s",
+            i,
+            type(spec).__name__,
+            len(group.layer_names),
+            getattr(spec, "block_size", None),
+            spec.page_size_bytes,
+            cdiv(max_bytes, spec.page_size_bytes),
+            max_bytes / (1024**2),
+            getattr(spec, "page_size_padded", None),
+            getattr(spec, "sliding_window", None),
+        )
+
+
 def _estimate_max_model_len_from_groups(
     vllm_config: VllmConfig,
     kv_cache_groups: list[KVCacheGroupSpec],
@@ -2063,6 +2098,7 @@ def get_kv_cache_configs(
     for groups, avail_mem in zip(projected_groups_per_worker, available_memory):
         if not groups:
             continue
+        _log_kv_cache_group_memory_plan(vllm_config, groups, avail_mem)
         _check_enough_kv_cache_memory(
             avail_mem,
             partial(_max_memory_usage_bytes_from_groups, vllm_config, groups),
