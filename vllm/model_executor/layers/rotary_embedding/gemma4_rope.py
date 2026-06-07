@@ -10,6 +10,8 @@ rotate_half, matching HF transformers' apply_rotary_pos_emb.
 
 import torch
 
+from vllm.platforms import current_platform
+
 from .base import RotaryEmbedding
 
 
@@ -61,8 +63,16 @@ class Gemma4RotaryEmbedding(RotaryEmbedding):
         rotary_dim), and non-rotated dims are zero-padded.
         """
         # HF formula: base ** (arange(0, 2*rope_angles, 2) / head_dim)
+        device = "cpu" if current_platform.is_xpu() else None
         freq_exponents = (
-            torch.arange(0, 2 * self.rope_angles, 2, dtype=torch.float) / self.head_size
+            torch.arange(
+                0,
+                2 * self.rope_angles,
+                2,
+                dtype=torch.float,
+                device=device,
+            )
+            / self.head_size
         )
         inv_freq = 1.0 / (base**freq_exponents)
 
@@ -71,7 +81,11 @@ class Gemma4RotaryEmbedding(RotaryEmbedding):
             inv_freq = torch.cat(
                 [
                     inv_freq,
-                    torch.zeros(self.nope_angles, dtype=torch.float),
+                    torch.zeros(
+                        self.nope_angles,
+                        dtype=torch.float,
+                        device=device,
+                    ),
                 ]
             )
         return inv_freq
