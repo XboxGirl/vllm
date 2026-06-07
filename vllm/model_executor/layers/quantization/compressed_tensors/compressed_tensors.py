@@ -1025,15 +1025,31 @@ class CompressedTensorsKVCacheMethod(BaseKVCacheMethod):
             )
 
         n_scales = int(layer.num_kv_heads) if strategy == "attn_head" else 1
+        device = "cpu" if current_platform.is_xpu() else None
 
         layer.k_scale = torch.nn.Parameter(
-            torch.ones(n_scales, requires_grad=False, dtype=torch.float32)
+            torch.ones(
+                n_scales,
+                requires_grad=False,
+                dtype=torch.float32,
+                device=device,
+            )
         )
         layer.v_scale = torch.nn.Parameter(
-            torch.ones(n_scales, requires_grad=False, dtype=torch.float32)
+            torch.ones(
+                n_scales,
+                requires_grad=False,
+                dtype=torch.float32,
+                device=device,
+            )
         )
         layer.q_scale = torch.nn.Parameter(
-            torch.ones(n_scales, requires_grad=False, dtype=torch.float32)
+            torch.ones(
+                n_scales,
+                requires_grad=False,
+                dtype=torch.float32,
+                device=device,
+            )
         )
 
         # Zero points are not used in vLLM as currently only symmetric quantization is
@@ -1041,13 +1057,13 @@ class CompressedTensorsKVCacheMethod(BaseKVCacheMethod):
         # checkpoints which contain them irrespective of the symmetric/asymmetric
         # scheme used during quantization.
         layer.k_zero_point = torch.nn.Parameter(
-            torch.zeros(n_scales, requires_grad=False)
+            torch.zeros(n_scales, requires_grad=False, device=device)
         )
         layer.v_zero_point = torch.nn.Parameter(
-            torch.zeros(n_scales, requires_grad=False)
+            torch.zeros(n_scales, requires_grad=False, device=device)
         )
         layer.q_zero_point = torch.nn.Parameter(
-            torch.zeros(n_scales, requires_grad=False)
+            torch.zeros(n_scales, requires_grad=False, device=device)
         )
 
         # TP-aware loading for attn_head strategy follows attention head partitioning:
