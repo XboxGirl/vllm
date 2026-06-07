@@ -221,7 +221,19 @@ class AutoWeightsLoader:
                 )
 
             weight_loader = getattr(param, "weight_loader", default_weight_loader)
-            weight_loader(param, weight_data)
+            try:
+                weight_loader(param, weight_data)
+            except Exception as err:
+                raise RuntimeError(
+                    "Failed to load weight "
+                    f"{weight_qualname!r} into parameter {base_prefix!r}: "
+                    f"param_shape={tuple(param.shape)}, "
+                    f"param_dtype={param.dtype}, "
+                    f"param_device={param.device}, "
+                    f"weight_shape={tuple(weight_data.shape)}, "
+                    f"weight_dtype={weight_data.dtype}, "
+                    f"weight_device={weight_data.device}"
+                ) from err
 
             logger.debug("Loaded weight %s with shape %s", weight_qualname, param.shape)
 
