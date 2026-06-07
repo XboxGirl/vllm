@@ -98,9 +98,10 @@ _VIDEO_MAX_FRAMES = 32  # max sampled frames per video
 
 def _get_suppress_token_ids_tensor(gen_cfg: Mapping[str, Any] | None) -> torch.Tensor:
     suppress_token_ids = gen_cfg.get("suppress_tokens") if gen_cfg else None
+    device = "cpu" if current_platform.is_xpu() else None
     if not suppress_token_ids:
-        return torch.empty(0, dtype=torch.long)
-    return torch.tensor(suppress_token_ids, dtype=torch.long)
+        return torch.empty(0, dtype=torch.long, device=device)
+    return torch.tensor(suppress_token_ids, dtype=torch.long, device=device)
 
 
 def _suppress_logits(
