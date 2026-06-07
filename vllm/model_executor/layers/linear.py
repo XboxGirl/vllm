@@ -42,7 +42,7 @@ from vllm.platforms import current_platform
 
 logger = init_logger(__name__)
 
-_XPU_WEIGHT_COPY_CHUNK_BYTES = 64 * 1024 * 1024
+_XPU_WEIGHT_COPY_CHUNK_BYTES = 16 * 1024 * 1024
 
 WEIGHT_LOADER_V2_SUPPORTED = [
     "UnquantizedLinearMethod",
@@ -74,8 +74,6 @@ def _copy_loaded_weight(param: Parameter, loaded_weight: torch.Tensor) -> None:
     if (
         not current_platform.is_xpu()
         or dst.device.type != "xpu"
-        or loaded_weight.numel() * loaded_weight.element_size()
-        <= _XPU_WEIGHT_COPY_CHUNK_BYTES
         or not dst.is_contiguous()
         or not loaded_weight.is_contiguous()
     ):
@@ -88,6 +86,7 @@ def _copy_loaded_weight(param: Parameter, loaded_weight: torch.Tensor) -> None:
     for start in range(0, src_flat.numel(), chunk_elems):
         end = min(start + chunk_elems, src_flat.numel())
         dst_flat[start:end].copy_(src_flat[start:end])
+        torch.xpu.synchronize()
 
 
 def adjust_marlin_shard(
