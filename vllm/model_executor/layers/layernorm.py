@@ -69,14 +69,24 @@ class RMSNorm(CustomOp):
         #  2) if variance_size_override is given (only supported by native impl)
         # TODO(luka): address weight passing inconsistency:
         # https://github.com/vllm-project/vllm/issues/39370
-        priority = get_current_vllm_config().kernel_config.ir_op_priority
+        vllm_config = get_current_vllm_config()
+        priority = vllm_config.kernel_config.ir_op_priority
+        is_xpu = str(vllm_config.device_config.device) == "xpu"
         var_override = self.variance_size_override is not None
         native_rms_norm = priority.rms_norm[0] == "native" or var_override
         native_add_rms_norm = priority.fused_add_rms_norm[0] == "native" or var_override
         self.pass_weight = self.has_weight or not native_rms_norm
         self.pass_weight_add = self.has_weight or not native_add_rms_norm
 
-        if self.has_weight or self.pass_weight or self.pass_weight_add:
+        if self.has_weight and is_xpu:
+            # Learned RMSNorm weights are checkpoint-loaded before inference.
+            # Avoid launching an eager all-ones fill kernel during XPU model
+            # construction; with large MTP + multimodal startup allocations,
+            # Level Zero can report UR_RESULT_ERROR_OUT_OF_RESOURCES on these
+            # tiny initialization kernels even though the values are about to
+            # be overwritten by checkpoint loading.
+            self.weight = torch.empty(hidden_size, dtype=weight_dtype)
+        elif self.has_weight or self.pass_weight or self.pass_weight_add:
             self.weight = torch.ones(hidden_size, dtype=weight_dtype)
         else:
             # No learned weight, and native RMSNorm paths will receive None.
