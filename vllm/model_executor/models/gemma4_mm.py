@@ -129,6 +129,36 @@ def _get_max_soft_tokens(
     return None, False
 
 
+def _stack_or_pad_audio_inputs(
+    audio_input: Mapping[str, Any],
+) -> tuple[torch.Tensor, torch.Tensor]:
+    feats = audio_input["input_features_padded"]
+    masks = audio_input["input_features_mask"]
+    if not isinstance(feats, list):
+        return feats.squeeze(1), masks.squeeze(1)
+
+    # Variable-length batch: MultiModalFieldConfig.batched() can only stack
+    # equal-shaped items, so mixed mel lengths arrive as a list of [T_i, F]
+    # tensors. Re-pad here to the batch max and keep padded frames masked out.
+    feat_items = [
+        f.squeeze(0) if f.ndim == 3 and f.shape[0] == 1 else f for f in feats
+    ]
+    mask_items = [
+        m.squeeze(0) if m.ndim == 2 and m.shape[0] == 1 else m for m in masks
+    ]
+    t_max = max(f.shape[-2] for f in feat_items)
+    feat_dim = feat_items[0].shape[-1]
+    input_features = feat_items[0].new_zeros((len(feat_items), t_max, feat_dim))
+    input_features_mask = mask_items[0].new_zeros(
+        (len(mask_items), t_max), dtype=torch.bool
+    )
+    for i, (f, m) in enumerate(zip(feat_items, mask_items, strict=True)):
+        t = f.shape[-2]
+        input_features[i, :t] = f
+        input_features_mask[i, :t] = m.to(torch.bool)
+    return input_features, input_features_mask
+
+
 # ---------------------------------------------------------------------------
 # Input schema
 # ---------------------------------------------------------------------------
@@ -171,10 +201,12 @@ class Gemma4AudioInputs(TensorSchema):
 
     type: Literal["audio"] = "audio"
     input_features_padded: Annotated[
-        torch.Tensor, TensorShape("bn", "s", "f", dynamic_dims={"s"})
+        torch.Tensor | list[torch.Tensor],
+        TensorShape("bn", "s", "f", dynamic_dims={"s"}),
     ]
     input_features_mask: Annotated[
-        torch.Tensor, TensorShape("bn", "s", dynamic_dims={"s"})
+        torch.Tensor | list[torch.Tensor],
+        TensorShape("bn", "s", dynamic_dims={"s"}),
     ]
 
 
@@ -1494,8 +1526,7 @@ class Gemma4ForConditionalGeneration(
         self,
         audio_input: Gemma4AudioInputs,
     ) -> list[torch.Tensor]:
-        input_features = audio_input["input_features_padded"].squeeze(1)
-        input_features_mask = audio_input["input_features_mask"].squeeze(1)
+        input_features, input_features_mask = _stack_or_pad_audio_inputs(audio_input)
 
         # Run audio tower — mask convention: True=valid, False=padding.
         audio_outputs = self.audio_tower(input_features, input_features_mask)

@@ -44,6 +44,7 @@ from vllm.model_executor.models.gemma4_mm import (
     Gemma4MultiModalProcessor,
     Gemma4ProcessingInfo,
     _get_suppress_token_ids_tensor,
+    _stack_or_pad_audio_inputs,
     _get_max_soft_tokens,
 )
 from vllm.model_executor.models.module_mapping import MultiModelKeys
@@ -495,8 +496,7 @@ class Gemma4UnifiedForConditionalGeneration(Gemma4ForConditionalGeneration):
         No audio tower: the per-frame raw features are passed straight
         through the multimodal embedder, then padding is stripped.
         """
-        input_features = audio_input["input_features_padded"].squeeze(1)
-        input_features_mask = audio_input["input_features_mask"].squeeze(1)
+        input_features, input_features_mask = _stack_or_pad_audio_inputs(audio_input)
 
         target_dtype = self.embed_audio.embedding_projection.weight.dtype
         audio_features = self.embed_audio(input_features.to(target_dtype))
