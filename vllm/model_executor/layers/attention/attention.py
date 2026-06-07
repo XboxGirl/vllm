@@ -93,11 +93,22 @@ def should_load_quant_weights(quant_method: QuantizeMethodBase | None) -> bool:
 
 def set_default_quant_scales(layer: nn.Module, register_buffer: bool = False) -> None:
     """Sets default quantization scales for the layer."""
+    is_xpu = current_platform.is_xpu()
     if register_buffer:
-        layer.register_buffer("_k_scale", torch.tensor(1.0, dtype=torch.float32))
-        layer.register_buffer("_v_scale", torch.tensor(1.0, dtype=torch.float32))
-        layer.register_buffer("_q_scale", torch.tensor(1.0, dtype=torch.float32))
-        layer.register_buffer("_prob_scale", torch.tensor(1.0, dtype=torch.float32))
+        if is_xpu:
+            # Model construction runs under the target-device context.  Avoid
+            # eager scalar-fill kernels here; the buffers are either overwritten
+            # by checkpoint scales or initialized to 1.0 in
+            # process_weights_after_loading().
+            layer.register_buffer("_k_scale", torch.empty((), dtype=torch.float32))
+            layer.register_buffer("_v_scale", torch.empty((), dtype=torch.float32))
+            layer.register_buffer("_q_scale", torch.empty((), dtype=torch.float32))
+            layer.register_buffer("_prob_scale", torch.empty((), dtype=torch.float32))
+        else:
+            layer.register_buffer("_k_scale", torch.tensor(1.0, dtype=torch.float32))
+            layer.register_buffer("_v_scale", torch.tensor(1.0, dtype=torch.float32))
+            layer.register_buffer("_q_scale", torch.tensor(1.0, dtype=torch.float32))
+            layer.register_buffer("_prob_scale", torch.tensor(1.0, dtype=torch.float32))
     else:
         layer._k_scale.fill_(1.0)
         layer._v_scale.fill_(1.0)
@@ -113,9 +124,14 @@ def set_default_quant_scales(layer: nn.Module, register_buffer: bool = False) ->
     layer._prob_scale_float = 1.0
 
     # Initialize q/k/v range constants used by calc_kv_scales
-    layer.q_range = torch.tensor(envs.Q_SCALE_CONSTANT, dtype=torch.float32)
-    layer.k_range = torch.tensor(envs.K_SCALE_CONSTANT, dtype=torch.float32)
-    layer.v_range = torch.tensor(envs.V_SCALE_CONSTANT, dtype=torch.float32)
+    if is_xpu:
+        layer.q_range = float(envs.Q_SCALE_CONSTANT)
+        layer.k_range = float(envs.K_SCALE_CONSTANT)
+        layer.v_range = float(envs.V_SCALE_CONSTANT)
+    else:
+        layer.q_range = torch.tensor(envs.Q_SCALE_CONSTANT, dtype=torch.float32)
+        layer.k_range = torch.tensor(envs.K_SCALE_CONSTANT, dtype=torch.float32)
+        layer.v_range = torch.tensor(envs.V_SCALE_CONSTANT, dtype=torch.float32)
 
 
 def _init_kv_cache_quant(
