@@ -6,6 +6,7 @@ import torch
 
 from vllm._aiter_ops import rocm_aiter_ops
 from vllm.model_executor.custom_op import CustomOp
+from vllm.platforms import current_platform
 
 from .common import ApplyRotaryEmb
 
@@ -83,10 +84,18 @@ class RotaryEmbeddingBase(CustomOp):
         # use CPU to compute the cache and then move it to GPU. However, we
         # create the cache on GPU for faster initialization. This may cause
         # a slight numerical difference between the HF implementation and ours.
+        device = "cpu" if current_platform.is_xpu() else None
         inv_freq = 1.0 / (
             base
             ** (
-                torch.arange(0, self.rotary_dim, 2, dtype=torch.float) / self.rotary_dim
+                torch.arange(
+                    0,
+                    self.rotary_dim,
+                    2,
+                    dtype=torch.float,
+                    device=device,
+                )
+                / self.rotary_dim
             )
         )
         return inv_freq
@@ -94,7 +103,12 @@ class RotaryEmbeddingBase(CustomOp):
     def _compute_cos_sin_cache(self) -> torch.Tensor:
         """Compute the cos and sin cache."""
         inv_freq = self._compute_inv_freq(self.base)
-        t = torch.arange(self.max_position_embeddings, dtype=torch.float)
+        device = inv_freq.device
+        t = torch.arange(
+            self.max_position_embeddings,
+            dtype=torch.float,
+            device=device,
+        )
 
         freqs = torch.einsum("i,j -> ij", t, inv_freq)
         cos = freqs.cos()
