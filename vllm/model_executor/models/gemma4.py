@@ -271,11 +271,15 @@ class Gemma4Router(nn.Module):
         # RMSNorm without learned weight — pure normalization only
         self.norm = RMSNorm(self.hidden_size, eps=config.rms_norm_eps, has_weight=False)
         # Per-dimension learned scale, applied after norm + root_size
-        self.scale = nn.Parameter(torch.ones(self.hidden_size))
+        if current_platform.is_xpu():
+            self.scale = nn.Parameter(torch.empty(self.hidden_size))
+        else:
+            self.scale = nn.Parameter(torch.ones(self.hidden_size))
         # Constant 1/sqrt(hidden_size) scaling factor
+        scalar_device = "cpu" if current_platform.is_xpu() else None
         self.register_buffer(
             "root_size",
-            torch.tensor(self.hidden_size**-0.5),
+            torch.tensor(self.hidden_size**-0.5, device=scalar_device),
             persistent=False,
         )
         # Project to expert logits; replicated across TP for consistent routing
@@ -292,7 +296,7 @@ class Gemma4Router(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Returns raw router logits [T, E]."""
         x = self.norm(x)
-        x = x * self.root_size.to(x.dtype)
+        x = x * self.root_size.to(device=x.device, dtype=x.dtype)
         x = x * self.scale.to(x.dtype)
         router_logits, _ = self.proj(x)
         return router_logits
@@ -321,7 +325,10 @@ class Gemma4MoE(nn.Module):
 
         # Per-expert output scale folded into routing weights so that
         # FusedMoE's fused kernel computes: Σ_e (expert_e * w_e * scale_e)
-        self.per_expert_scale = nn.Parameter(torch.ones(config.num_experts))
+        if current_platform.is_xpu():
+            self.per_expert_scale = nn.Parameter(torch.empty(config.num_experts))
+        else:
+            self.per_expert_scale = nn.Parameter(torch.ones(config.num_experts))
 
         # Gemma4 routing: softmax over ALL experts → top-k → renormalize.
         # FusedMoE's built-in fused_topk scopes softmax differently, so
@@ -692,7 +699,8 @@ class Gemma4DecoderLayer(nn.Module):
             self.post_per_layer_input_norm = None
 
         # Layer scalar (loaded from checkpoint) — applies to ALL text layers
-        self.register_buffer("layer_scalar", torch.ones(1))
+        layer_scalar = torch.empty(1) if current_platform.is_xpu() else torch.ones(1)
+        self.register_buffer("layer_scalar", layer_scalar)
 
     def forward(
         self,
@@ -833,7 +841,11 @@ class Gemma4SelfDecoderLayers(nn.Module):
         self.per_layer_projection_scale = per_layer_projection_scale
 
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
-        return self.embed_tokens(input_ids) * self.normalizer
+        inputs_embeds = self.embed_tokens(input_ids)
+        return inputs_embeds * self.normalizer.to(
+            device=inputs_embeds.device,
+            dtype=inputs_embeds.dtype,
+        )
 
     def get_per_layer_inputs(self, input_ids: torch.Tensor) -> torch.Tensor | None:
         """Get per-layer embeddings from embed_tokens_per_layer.
@@ -852,7 +864,10 @@ class Gemma4SelfDecoderLayers(nn.Module):
             per_layer_inputs_mask, input_ids, torch.zeros_like(input_ids)
         )
         per_layer_embeds = self.embed_tokens_per_layer(per_layer_inputs_tokens)
-        per_layer_embeds = per_layer_embeds * self.embed_scale_per_layer
+        per_layer_embeds = per_layer_embeds * self.embed_scale_per_layer.to(
+            device=per_layer_embeds.device,
+            dtype=per_layer_embeds.dtype,
+        )
         return per_layer_embeds.reshape(
             *input_ids.shape,
             self.config.num_hidden_layers,
@@ -876,7 +891,10 @@ class Gemma4SelfDecoderLayers(nn.Module):
         if self.per_layer_model_projection is None:
             return None
         per_layer_projection = self.per_layer_model_projection(inputs_embeds)
-        per_layer_projection = per_layer_projection * self.per_layer_projection_scale
+        per_layer_projection = per_layer_projection * self.per_layer_projection_scale.to(
+            device=per_layer_projection.device,
+            dtype=per_layer_projection.dtype,
+        )
         per_layer_projection = per_layer_projection.reshape(
             *inputs_embeds.shape[:-1],
             self.config.num_hidden_layers,
@@ -885,7 +903,10 @@ class Gemma4SelfDecoderLayers(nn.Module):
         per_layer_projection = self.per_layer_projection_norm(per_layer_projection)
         if per_layer_inputs is None:
             return per_layer_projection
-        return (per_layer_projection + per_layer_inputs) * self.per_layer_input_scale
+        return (per_layer_projection + per_layer_inputs) * self.per_layer_input_scale.to(
+            device=per_layer_projection.device,
+            dtype=per_layer_projection.dtype,
+        )
 
     def forward(
         self,
@@ -997,7 +1018,10 @@ class Gemma4Model(nn.Module, EagleModelMixin):
             # and interacts correctly with torch.compile AOT caching.
             self.register_buffer(
                 "embed_scale_per_layer",
-                torch.tensor(self.hidden_size_per_layer_input**0.5),
+                torch.tensor(
+                    self.hidden_size_per_layer_input**0.5,
+                    device="cpu" if current_platform.is_xpu() else None,
+                ),
                 persistent=False,
             )
             # Projection: hidden_size → total_ple_dim
@@ -1021,14 +1045,22 @@ class Gemma4Model(nn.Module, EagleModelMixin):
             # and interacts correctly with torch.compile AOT caching.
             self.register_buffer(
                 "per_layer_input_scale",
-                torch.rsqrt(torch.tensor(2.0)),
+                torch.rsqrt(
+                    torch.tensor(
+                        2.0,
+                        device="cpu" if current_platform.is_xpu() else None,
+                    )
+                ),
                 persistent=False,
             )
             # Scaled projection: multiply output by hidden_size**-0.5.
             # Register as buffer for GPU placement and torch.compile.
             self.register_buffer(
                 "per_layer_projection_scale",
-                torch.tensor(config.hidden_size**-0.5),
+                torch.tensor(
+                    config.hidden_size**-0.5,
+                    device="cpu" if current_platform.is_xpu() else None,
+                ),
                 persistent=False,
             )
         else:
@@ -1059,6 +1091,7 @@ class Gemma4Model(nn.Module, EagleModelMixin):
             torch.tensor(
                 config.hidden_size**0.5,
                 dtype=vllm_config.model_config.dtype,
+                device="cpu" if current_platform.is_xpu() else None,
             ),
             persistent=False,
         )
