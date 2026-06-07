@@ -42,7 +42,7 @@ from vllm.platforms import current_platform
 
 logger = init_logger(__name__)
 
-_XPU_WEIGHT_COPY_CHUNK_BYTES = 16 * 1024 * 1024
+_XPU_WEIGHT_COPY_CHUNK_BYTES = 1 * 1024 * 1024
 
 WEIGHT_LOADER_V2_SUPPORTED = [
     "UnquantizedLinearMethod",
