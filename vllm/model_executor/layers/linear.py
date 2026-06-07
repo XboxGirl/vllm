@@ -71,6 +71,12 @@ def register_weight_loader_v2_supported_method(cls):
 
 def _copy_loaded_weight(param: Parameter, loaded_weight: torch.Tensor) -> None:
     dst = param.data
+    if current_platform.is_xpu() and loaded_weight.device.type == "cpu":
+        if loaded_weight.dtype != dst.dtype:
+            loaded_weight = loaded_weight.to(dtype=dst.dtype)
+        if not loaded_weight.is_contiguous():
+            loaded_weight = loaded_weight.contiguous()
+
     if (
         not current_platform.is_xpu()
         or dst.device.type != "xpu"
