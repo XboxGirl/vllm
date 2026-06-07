@@ -42,6 +42,8 @@ from vllm.platforms import current_platform
 
 logger = init_logger(__name__)
 
+_XPU_WEIGHT_COPY_CHUNK_BYTES = 64 * 1024 * 1024
+
 WEIGHT_LOADER_V2_SUPPORTED = [
     "UnquantizedLinearMethod",
     "CompressedTensorsLinearMethod",
@@ -65,6 +67,27 @@ def register_weight_loader_v2_supported_method(cls):
     """Decorator to register a LinearMethod as supporting weight_loader_v2."""
     WEIGHT_LOADER_V2_SUPPORTED.append(cls.__name__)
     return cls
+
+
+def _copy_loaded_weight(param: Parameter, loaded_weight: torch.Tensor) -> None:
+    dst = param.data
+    if (
+        not current_platform.is_xpu()
+        or dst.device.type != "xpu"
+        or loaded_weight.numel() * loaded_weight.element_size()
+        <= _XPU_WEIGHT_COPY_CHUNK_BYTES
+        or not dst.is_contiguous()
+        or not loaded_weight.is_contiguous()
+    ):
+        dst.copy_(loaded_weight)
+        return
+
+    chunk_elems = max(1, _XPU_WEIGHT_COPY_CHUNK_BYTES // loaded_weight.element_size())
+    dst_flat = dst.view(-1)
+    src_flat = loaded_weight.view(-1)
+    for start in range(0, src_flat.numel(), chunk_elems):
+        end = min(start + chunk_elems, src_flat.numel())
+        dst_flat[start:end].copy_(src_flat[start:end])
 
 
 def adjust_marlin_shard(
@@ -380,7 +403,7 @@ class ReplicatedLinear(LinearBase):
             f"Tried to load weights of size {loaded_weight.size()}"
             f"to a parameter of size {param.size()}"
         )
-        param.data.copy_(loaded_weight)
+        _copy_loaded_weight(param, loaded_weight)
 
     def forward(
         self,
