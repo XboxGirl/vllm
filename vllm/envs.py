@@ -257,7 +257,7 @@ if TYPE_CHECKING:
     VLLM_TQ_CONTINUATION_DECODE_THRESHOLD: int = 0
     VLLM_GC_DEBUG: str = ""
     VLLM_DEBUG_WORKSPACE: bool = False
-    VLLM_PROFILE_RUN_MAX_TOKENS: int = 4096
+    VLLM_PROFILE_RUN_MAX_TOKENS: int = 0
     VLLM_DISABLE_SHARED_EXPERTS_STREAM: bool = False
     VLLM_SHARED_EXPERTS_STREAM_TOKEN_THRESHOLD: int = 256
     VLLM_MULTI_STREAM_GEMM_TOKEN_THRESHOLD: int = 1024
@@ -1897,9 +1897,11 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # logging of workspace resize operations.
     "VLLM_DEBUG_WORKSPACE": lambda: bool(int(os.getenv("VLLM_DEBUG_WORKSPACE", "0"))),
     # Maximum token count used by the synthetic memory-profiling run.
-    # Set to 0 to profile with the full runtime max_num_batched_tokens.
+    # 0 profiles with the full runtime max_num_batched_tokens. Set a positive
+    # value only to cap synthetic profiling for configurations that cannot
+    # complete a full-size profile run.
     "VLLM_PROFILE_RUN_MAX_TOKENS": lambda: int(
-        os.getenv("VLLM_PROFILE_RUN_MAX_TOKENS", "4096")
+        os.getenv("VLLM_PROFILE_RUN_MAX_TOKENS", "0")
     ),
     # Disables parallel execution of shared_experts via separate cuda stream
     "VLLM_DISABLE_SHARED_EXPERTS_STREAM": lambda: bool(

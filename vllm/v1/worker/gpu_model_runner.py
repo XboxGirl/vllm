@@ -6306,10 +6306,10 @@ class GPUModelRunner(
         self._reserve_turboquant_continuation_buffers()
 
         # Add `is_profile` here to pre-allocate communication buffers.
-        # Cap the profiled M by default to avoid Dynamo/Triton fake-tensor
-        # shape conflicts in MoE profile runs when operators use large
-        # --max-num-batched-tokens. Runtime batches can still use the full
-        # scheduler limit; this only bounds the synthetic profiling pass.
+        # By default, profile the full runtime max_num_batched_tokens so
+        # token-count-dependent workspaces are sized before locking. Operators
+        # that cannot complete a full-size synthetic profile can opt into a
+        # smaller cap with VLLM_PROFILE_RUN_MAX_TOKENS.
         profile_run_cap = envs.VLLM_PROFILE_RUN_MAX_TOKENS
         profile_num_tokens = (
             min(self.max_num_tokens, profile_run_cap)
