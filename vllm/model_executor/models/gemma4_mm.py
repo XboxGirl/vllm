@@ -129,6 +129,22 @@ def _get_max_soft_tokens(
     return None, False
 
 
+def _get_processor_image_soft_tokens(processor: object) -> int | None:
+    """Return the HF processor's default image soft-token budget, if set."""
+    image_processor = getattr(processor, "image_processor", None)
+    for obj, attr in (
+        (image_processor, "max_soft_tokens"),
+        (processor, "image_seq_length"),
+        (processor, "num_image_tokens"),
+        (processor, "max_image_tokens"),
+    ):
+        value = getattr(obj, attr, None)
+        if isinstance(value, int) and value in _SUPPORTED_SOFT_TOKENS:
+            return value
+
+    return None
+
+
 def _stack_or_pad_audio_inputs(
     audio_input: Mapping[str, Any],
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -381,6 +397,9 @@ class Gemma4ProcessingInfo(BaseProcessingInfo):
         """
         if processor is None:
             processor = self.get_hf_processor()
+
+        if max_soft_tokens is None:
+            max_soft_tokens = _get_processor_image_soft_tokens(processor)
 
         num_soft = self._compute_num_soft_tokens(
             image_width,

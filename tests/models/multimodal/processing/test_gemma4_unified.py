@@ -177,6 +177,55 @@ def test_get_prompt_updates_respects_nested_max_soft_tokens(model_id: str):
     assert replacement == expected
 
 
+@pytest.mark.parametrize(
+    "hf_processor_mm_kwargs",
+    [
+        {},
+        {"max_soft_tokens": 1120},
+        {"images_kwargs": {"max_soft_tokens": 1120}},
+    ],
+)
+@pytest.mark.parametrize("model_id", [GEMMA4_UNIFIED_MODEL_ID])
+def test_prompt_update_matches_hf_image_processor_token_count(
+    model_id: str,
+    hf_processor_mm_kwargs: dict[str, object],
+):
+    """Regression for QAT configs exposing mm_posemb_size=1120.
+
+    ``mm_posemb_size`` is the position table capacity, not necessarily the
+    HF image processor's default ``max_soft_tokens``. With no per-request
+    override, prompt replacement must match the HF processor's default image
+    token count rather than expanding placeholders to the position-table max.
+    """
+    ctx = build_model_context(
+        model_id,
+        limit_mm_per_prompt={"image": 1},
+    )
+    processor = MULTIMODAL_REGISTRY.create_processor(ctx.model_config)
+    hf_processor = processor.info.get_hf_processor()
+    image = PILImage.new("RGB", (500, 300), color="white")
+    mm_items = processor.info.parse_mm_data({"image": image})
+
+    hf_outputs = processor._call_hf_processor(
+        "\t" + hf_processor.image_token,
+        {"images": [image]},
+        hf_processor_mm_kwargs,
+        {},
+    )
+    input_ids = hf_outputs["input_ids"][0]
+    input_ids = input_ids.tolist() if hasattr(input_ids, "tolist") else input_ids
+    hf_image_tokens = input_ids.count(hf_processor.image_token_id)
+
+    prompt_update = processor._get_prompt_updates(
+        mm_items,
+        hf_processor_mm_kwargs,
+        {},
+    )[0]
+    replacement = prompt_update.resolve(0).content.full
+
+    assert replacement.count(hf_processor.image_token_id) == hf_image_tokens
+
+
 @pytest.mark.parametrize("model_id", [GEMMA4_UNIFIED_MODEL_ID])
 def test_limit_mm_per_prompt(
     image_assets: ImageTestAssets,
