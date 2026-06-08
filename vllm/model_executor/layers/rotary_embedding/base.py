@@ -4,6 +4,7 @@
 
 import torch
 
+import vllm.envs as envs
 from vllm._aiter_ops import rocm_aiter_ops
 from vllm.model_executor.custom_op import CustomOp
 from vllm.platforms import current_platform
@@ -60,6 +61,13 @@ class RotaryEmbeddingBase(CustomOp):
             cache = self._compute_cos_sin_cache()
             if not self.use_flashinfer:
                 cache = cache.to(dtype)
+            if current_platform.is_xpu() and envs.VLLM_XPU_ENABLE_XPU_GRAPH:
+                # XPU computes RoPE tables on CPU for parity with HF, but
+                # torch.compile otherwise sees the CPU buffer and emits a
+                # CPU->XPU copy inside the compiled graph.  Intel command graph
+                # capture cannot wait on that copy event, so place the already
+                # computed cache on XPU before compilation/capture observes it.
+                cache = cache.to(current_platform.device_type)
             self.cos_sin_cache: torch.Tensor
             self.register_buffer("cos_sin_cache", cache, persistent=False)
 

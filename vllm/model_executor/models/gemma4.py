@@ -26,6 +26,7 @@ import regex as re
 import torch
 from torch import nn
 
+import vllm.envs as envs
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import CacheConfig, VllmConfig
 from vllm.distributed import (
@@ -83,6 +84,22 @@ from .utils import (
 )
 
 logger = init_logger(__name__)
+
+
+def _gemma4_scalar_device() -> str | None:
+    """Return the initialization device for Gemma4 scalar buffers.
+
+    XPU command graph capture cannot wait on CPU->XPU copy events emitted by
+    Inductor for scalar ``device_put`` operations.  When XPU Graph is enabled,
+    initialize scalar buffers on XPU up front so compiled/captured forwards only
+    see device-resident tensors.  Preserve the existing CPU initialization path
+    for non-graph XPU runs and other platforms.
+    """
+    if current_platform.is_xpu() and envs.VLLM_XPU_ENABLE_XPU_GRAPH:
+        return current_platform.device_type
+    if current_platform.is_xpu():
+        return "cpu"
+    return None
 
 
 def _remap_gemma4_expert_weight_name(name: str) -> str:
@@ -276,10 +293,9 @@ class Gemma4Router(nn.Module):
         else:
             self.scale = nn.Parameter(torch.ones(self.hidden_size))
         # Constant 1/sqrt(hidden_size) scaling factor
-        scalar_device = "cpu" if current_platform.is_xpu() else None
         self.register_buffer(
             "root_size",
-            torch.tensor(self.hidden_size**-0.5, device=scalar_device),
+            torch.tensor(self.hidden_size**-0.5, device=_gemma4_scalar_device()),
             persistent=False,
         )
         # Project to expert logits; replicated across TP for consistent routing
@@ -1020,7 +1036,7 @@ class Gemma4Model(nn.Module, EagleModelMixin):
                 "embed_scale_per_layer",
                 torch.tensor(
                     self.hidden_size_per_layer_input**0.5,
-                    device="cpu" if current_platform.is_xpu() else None,
+                    device=_gemma4_scalar_device(),
                 ),
                 persistent=False,
             )
@@ -1048,7 +1064,7 @@ class Gemma4Model(nn.Module, EagleModelMixin):
                 torch.rsqrt(
                     torch.tensor(
                         2.0,
-                        device="cpu" if current_platform.is_xpu() else None,
+                        device=_gemma4_scalar_device(),
                     )
                 ),
                 persistent=False,
@@ -1059,7 +1075,7 @@ class Gemma4Model(nn.Module, EagleModelMixin):
                 "per_layer_projection_scale",
                 torch.tensor(
                     config.hidden_size**-0.5,
-                    device="cpu" if current_platform.is_xpu() else None,
+                    device=_gemma4_scalar_device(),
                 ),
                 persistent=False,
             )
@@ -1091,7 +1107,7 @@ class Gemma4Model(nn.Module, EagleModelMixin):
             torch.tensor(
                 config.hidden_size**0.5,
                 dtype=vllm_config.model_config.dtype,
-                device="cpu" if current_platform.is_xpu() else None,
+                device=_gemma4_scalar_device(),
             ),
             persistent=False,
         )

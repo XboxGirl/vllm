@@ -47,7 +47,7 @@ from vllm.model_executor.layers.vocab_parallel_embedding import (
 from vllm.model_executor.model_loader.weight_utils import default_weight_loader
 from vllm.sequence import IntermediateTensors
 
-from .gemma4 import Gemma4MLP, _get_text_config
+from .gemma4 import Gemma4MLP, _gemma4_scalar_device, _get_text_config
 from .utils import (
     AutoWeightsLoader,
     WeightsMapper,
@@ -431,7 +431,11 @@ class Gemma4MultiTokenPredictor(nn.Module):
         # sqrt(backbone_hidden_size) to match the target's convention.
         self.register_buffer(
             "normalizer",
-            torch.tensor(self.backbone_hidden_size**0.5),
+            torch.tensor(
+                self.backbone_hidden_size**0.5,
+                dtype=vllm_config.model_config.dtype,
+                device=_gemma4_scalar_device(),
+            ),
             persistent=False,
         )
 
