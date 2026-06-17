@@ -75,8 +75,31 @@ class Gemma4Config(VerifyAndUpdateConfig):
         if head_dim is None or global_head_dim is None or head_dim == global_head_dim:
             return
 
+        import vllm.envs as envs
+
+        if envs.VLLM_TARGET_DEVICE == "xpu":
+            logger.info(
+                "Gemma4 model has heterogeneous head dimensions "
+                "(head_dim=%d, global_head_dim=%d). Keeping XPU platform "
+                "attention backend selection.",
+                head_dim,
+                global_head_dim,
+            )
+            return
+
+        from vllm.platforms import current_platform
         from vllm.v1.attention.backends.fa_utils import is_fa_version_supported
         from vllm.v1.attention.backends.registry import AttentionBackendEnum
+
+        if current_platform.is_xpu():
+            logger.info(
+                "Gemma4 model has heterogeneous head dimensions "
+                "(head_dim=%d, global_head_dim=%d). Keeping XPU platform "
+                "attention backend selection.",
+                head_dim,
+                global_head_dim,
+            )
+            return
 
         max_head_dim = max(head_dim, global_head_dim)
 

@@ -38,12 +38,20 @@ class XPUModelRunnerV2(GPUModelRunnerV2):
             super().__init__(vllm_config, device)
 
 
+def _xpu_default_stream(*args, **kwargs):
+    return torch.xpu.default_stream(*args, **kwargs)
+
+
+def _xpu_current_stream(*args, **kwargs):
+    return torch.xpu.current_stream(*args, **kwargs)
+
+
 @contextmanager
 def _torch_cuda_wrapper():
     # replace cuda APIs with xpu APIs, this should work by default
     torch.cuda.Stream = torch.xpu.Stream
-    torch.cuda.default_stream = torch.xpu.current_stream
-    torch.cuda.current_stream = torch.xpu.current_stream
+    torch.cuda.default_stream = _xpu_default_stream
+    torch.cuda.current_stream = _xpu_current_stream
     torch.cuda.stream = torch.xpu.stream
     torch.cuda.mem_get_info = torch.xpu.mem_get_info
     torch.cuda.Event = torch.Event
