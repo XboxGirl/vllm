@@ -251,20 +251,32 @@ class OpenAIServingChat(GenerateBaseServing):
         request: ChatCompletionRequest,
         raw_request: Request | None = None,
     ) -> AsyncGenerator[str, None] | ChatCompletionResponse | ErrorResponse:
-        # [Genesis P68/P69 long-ctx tool-call adherence] Mutate request
+        # [P68/P69 long-ctx tool-call adherence] Mutate request
         # in-place if conditions met (env-gated). No-op when env flags
         # off, when no tools, or when prompt below threshold.
         try:
             from vllm.middleware.long_ctx_tool_adherence import (
-                apply_hook as _genesis_p6869_apply_hook,
+                apply_hook as _p6869_apply_hook,
             )
-            _genesis_p6869_apply_hook(self, request)
+            _p6869_apply_hook(self, request)
         except Exception:
-            # Hook failure is non-fatal — fall through to standard path.
-            import logging as _genesis_p6869_logging
-            _genesis_p6869_logging.getLogger(
+            import logging as _p6869_logging
+            _p6869_logging.getLogger(
                 'vllm.middleware.long_ctx_tool_adherence'
-            ).debug('Genesis P68/P69 hook raised; ignored', exc_info=True)
+            ).debug('P68/P69 long-ctx tool adherence hook raised; ignored',
+                    exc_info=True)
+        # [PN70 tool schema subset filter] Wrap _get_json_schema_from_tools
+        # to filter xgrammar-incompatible tools from combined anyOf schema.
+        try:
+            from vllm.middleware.pn70_tool_schema_subset_filter import (
+                apply_tool_schema_filter,
+            )
+            apply_tool_schema_filter()
+        except Exception:
+            import logging as _pn70_logging
+            _pn70_logging.getLogger(
+                'vllm.middleware.pn70_tool_schema_subset_filter'
+            ).debug('PN70 tool schema filter init failed; ignored', exc_info=True)
         # Streaming response
         tokenizer = self.renderer.tokenizer
         assert tokenizer is not None
