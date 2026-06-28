@@ -1265,7 +1265,8 @@ class StreamingXMLToolCallParser:
         Returns:
             Converted value
         """
-        if param_value.lower() == "null":
+        # Accept Python repr 'None' alongside JSON 'null' (PR #38996)
+        if param_value.lower() in ("null", "none"):
             return None
 
         param_type = param_type.strip().lower()
