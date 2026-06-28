@@ -1852,6 +1852,42 @@ class VllmConfig:
                     cudagraph_capture_sizes
                 )
 
+            # Filter cudagraph_capture_sizes for spec-decode
+            # uniform_decode_query_len divisibility. Without this filter,
+            # capture phase produces mixed-q_len batches (e.g. [4,4,2]) where
+            # the tail request gets misclassified as prefill, baking a prefill
+            # branch into the captured uniform decode graph. At runtime real
+            # decode batches replay that wrong path → degenerate output.
+            # Mirrors vllm-project/vllm#23679 (closed/stale) + #28015 (bug).
+            if self.speculative_config is not None and getattr(
+                self.speculative_config, 'num_speculative_tokens', 0
+            ):
+                _p66_uniform_q_len = 1 + self.speculative_config.num_speculative_tokens
+                if _p66_uniform_q_len > 1:
+                    _p66_orig = list(cudagraph_capture_sizes)
+                    cudagraph_capture_sizes = [
+                        _s for _s in cudagraph_capture_sizes
+                        if _s % _p66_uniform_q_len == 0
+                    ]
+                    # Always retain at least uniform_q_len itself if it fits
+                    if (
+                        _p66_uniform_q_len not in cudagraph_capture_sizes
+                        and _p66_uniform_q_len <= max_num_tokens
+                    ):
+                        cudagraph_capture_sizes.append(_p66_uniform_q_len)
+                    cudagraph_capture_sizes.sort()
+                    _p66_removed = sorted(
+                        set(_p66_orig) - set(cudagraph_capture_sizes)
+                    )
+                    if _p66_removed:
+                        logger.info(
+                            'Filtered cudagraph_capture_sizes for spec-decode '
+                            'uniform_query_len=%d: removed %d non-divisible sizes '
+                            '%s; kept %s. Prevents mixed-q_len capture (vllm#28015).',
+                            _p66_uniform_q_len, len(_p66_removed),
+                            _p66_removed, cudagraph_capture_sizes,
+                        )
+
             # user-specific compilation_config.max_cudagraph_capture_size get
             # truncated to valid_max_size when they are inconsistent.
             valid_max_size = (
