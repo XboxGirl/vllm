@@ -25,15 +25,17 @@ Sources: vllm-project/vllm PRs + genesis-vllm-patches (Genesis-original only)
 | P65 | TurboQuant spec-decode cudagraph downgrade | **MERGED** (eb7eb8331) | GENESIS_ENABLE_P65_TURBOQUANT_SPEC_CG_DOWNGRADE |
 | P66 | cudagraph_capture_sizes spec-decode divisibility filter | **MERGED** (ebe26d141) | GENESIS_ENABLE_P66_CUDAGRAPH_SIZE_FILTER |
 | P67 | TurboQuant multi-query kernel for spec-decode K+1 | **MERGED** (891e8a0e3) | GENESIS_ENABLE_P67_TQ_MULTI_QUERY_KERNEL |
-| P83 | MTP keep-last-cached-block (vllm#38182 symptom) | Requires KV cache manager changes | GENESIS_ENABLE_P83 |
+| P83 | MTP keep-last-cached-block (vllm#38182 symptom) | **MERGED** (495adef37) | VLLM_MTP_KEEP_LAST_CACHED_BLOCK |
 | ~~P84~~ | ~~hash_block_size override (vllm#38182 root cause)~~ | ~~Already upstream as `hash_block_size` config option~~ | — |
-| P85 | Hybrid fine-shadow prefix cache (MambaManager fix) | Requires MambaManager changes | GENESIS_ENABLE_P85 |
+| P85 | Hybrid fine-shadow prefix cache (MambaManager fix) | **MERGED** (495adef37) | VLLM_HYBRID_FINE_SHADOW_CACHE |
 | ~~PN102~~ | ~~Unified spec-decode metadata + disagreement tracker~~ | ~~Requires Genesis kernel infrastructure~~ | — |
 
 **Notes**:
 - P65/P66/P67: Standalone patches, applied directly
-- P83: Requires modifying `use_eagle()` to distinguish MTP from Eagle/Eagle3 (multi-file change)
-- P85: Requires MambaManager cache_blocks + find_longest_cache_hit modifications (complex multi-site patch)
+- P83: Applied — is_mtp flag threaded through scheduler → KVCacheManager → coordinator
+- P85: Applied — fine-shadow cache in MambaManager.cache_blocks + find_longest_cache_hit
+- ~~P84~~: ~~retired~~ — upstream-native `--hash-block-size` config option
+- ~~PN102~~: ~~skipped~~ — requires Genesis kernel infrastructure
 
 ## NVFP4 (12 total)
 
@@ -57,7 +59,7 @@ Sources: vllm-project/vllm PRs + genesis-vllm-patches (Genesis-original only)
 |---|---|---|---|
 | PN61 | qwen3_vl loader KeyError to text-only auto-fallback | **MERGED** (84855f019) | GENESIS_ENABLE_PN61 |
 | ~~PN62~~ | ~~Text-only ViT scratch skip (3-5 GiB on 27B-NVFP4)~~ | ~~Opt-in~~ | ~~GENESIS_ENABLE_PN62~~ |
-| PN77 | FP8 lm_head compression (BF16 to FP8 e4m3) | Opt-in | GENESIS_ENABLE_PN77_FP8_LM_HEAD |
+| PN77 | FP8 lm_head compression (BF16 to FP8 e4m3) | **SKIPPED** — not needed | — |
 
 **Note**: PN62 superseded by upstream `MultiModalConfig.skip_mm_profiling` config option.
 
@@ -74,14 +76,15 @@ Sources: vllm-project/vllm PRs + genesis-vllm-patches (Genesis-original only)
 | ~~P61c~~ | ~~Qwen3Coder deferred-commit until `<function=` header~~ | ~~Version-gated (<0.23.0)~~ | — |
 | P68 | Auto force tool_choice=required for long-context | **MERGED** (99be29ff2) | GENESIS_ENABLE_P68_AUTO_FORCE_TOOL |
 | P69 | Long-context tool-format reminder injection | **MERGED** (99be29ff2) | GENESIS_ENABLE_P69_LONG_CTX_TOOL_REMINDER |
-| ~~PN70~~ | ~~Tool schema subset filter~~ | ~~Requires middleware infrastructure~~ | — |
+| PN70 | Tool schema subset filter | **MERGED** (495adef37) | VLLM_TOOL_SCHEMA_SUBSET_FILTER |
 | PN72 | Frequency-based ngram draft post-filter | **MERGED** (8d81ba4e7) | GENESIS_ENABLE_PN72_FREQUENCY_NGRAM_DRAFTER |
 
 **Notes**:
 - P12/P27/P29: Superseded by new parser architecture (vLLM >=0.23.0)
 - P61c/P64/PN56: Version-gated (<0.23.0), qwen3coder_tool_parser.py removed in dev148-era engine
-- P68/P69: Require Genesis middleware infrastructure (not standalone-applicable)
-- PN70/PN72: Require Genesis kernel modules (not standalone-applicable)
+- P68/P69: Applied as standalone middleware (long_ctx_tool_adherence.py)
+- PN70: Applied as standalone filter (pn70_tool_schema_subset_filter.py)
+- PN72: Applied as standalone filter (ngram_frequency_filter.py)
 
 ## Abandoned
 
@@ -103,5 +106,5 @@ XPU (#45779), Gemma (#46426, #46443), DeepSeek (#45452, #45149), MiniMax (#46816
 | Qwen Tool Calls | 0 | ~~9~~ | 9 |
 | **Total** | **17** | **19** | **36** |
 
-**Active Genesis patches** (standalone-applicable): P15, PN61 (2 of 19)
-**Struck-off**: Version-gated (<0.23.0), superseded by upstream, or require Genesis infrastructure
+**Active Genesis patches** (standalone-applicable): P15, P65, P66, P67, P68, P69, P83, P85, PN61, PN70, PN72 (11 of 19)
+**Struck-off**: Version-gated (<0.23.0), superseded by upstream, or skipped (PN77)
