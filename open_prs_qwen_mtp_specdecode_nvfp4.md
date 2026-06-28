@@ -26,9 +26,9 @@ Sources: vllm-project/vllm PRs + genesis-vllm-patches (Genesis-original only)
 | P66 | cudagraph_capture_sizes spec-decode divisibility filter | Opt-in | GENESIS_ENABLE_P66_CUDAGRAPH_SIZE_FILTER |
 | P67 | TurboQuant multi-query kernel for spec-decode K+1 | Opt-in | GENESIS_ENABLE_P67_TQ_MULTI_QUERY_KERNEL |
 | P83 | MTP keep-last-cached-block (vllm#38182 symptom) | Research | GENESIS_ENABLE_P83 |
-| P84 | hash_block_size override (vllm#38182 root cause) | Research | GENESIS_ENABLE_P84 |
+| ~~P84~~ | ~~hash_block_size override (vllm#38182 root cause)~~ | ~~Already upstream as `hash_block_size` config option~~ | — |
 | P85 | Hybrid fine-shadow prefix cache (MambaManager fix) | Research | GENESIS_ENABLE_P85 |
-| PN102 | Unified spec-decode metadata + disagreement tracker | Opt-in | GENESIS_ENABLE_P102 |
+| ~~PN102~~ | ~~Unified spec-decode metadata + disagreement tracker~~ | ~~Requires Genesis kernel infrastructure~~ | — |
 
 ## NVFP4 (12 total)
 
@@ -50,9 +50,11 @@ Sources: vllm-project/vllm PRs + genesis-vllm-patches (Genesis-original only)
 
 | ID | Title | Status | Env Flag |
 |---|---|---|---|
-| PN61 | qwen3_vl loader KeyError to text-only auto-fallback | Opt-in | GENESIS_ENABLE_PN61 |
-| PN62 | Text-only ViT scratch skip (3-5 GiB on 27B-NVFP4) | Opt-in | GENESIS_ENABLE_PN62 |
+| PN61 | qwen3_vl loader KeyError to text-only auto-fallback | **MERGED** (84855f019) | GENESIS_ENABLE_PN61 |
+| ~~PN62~~ | ~~Text-only ViT scratch skip (3-5 GiB on 27B-NVFP4)~~ | ~~Opt-in~~ | ~~GENESIS_ENABLE_PN62~~ |
 | PN77 | FP8 lm_head compression (BF16 to FP8 e4m3) | Opt-in | GENESIS_ENABLE_PN77_FP8_LM_HEAD |
+
+**Note**: PN62 superseded by upstream `MultiModalConfig.skip_mm_profiling` config option.
 
 ## Qwen Tool Calls (9 total)
 
@@ -60,15 +62,21 @@ Sources: vllm-project/vllm PRs + genesis-vllm-patches (Genesis-original only)
 
 | ID | Title | Status | Env Flag |
 |---|---|---|---|
-| P15 | Qwen3 None/null tool arg parser | Default ON | — |
-| P12 | Qwen3 implicit reasoning end | Default ON | — |
-| P27 | Qwen3 BEFORE-THINK fallback | Default ON | — |
-| P29 | tool parser IndexError guard | Default ON | — |
-| P61c | Qwen3Coder deferred-commit until function header | Opt-in | GENESIS_ENABLE_P61C_QWEN3CODER_DEFERRED_COMMIT |
-| P68 | Auto force tool_choice=required for long-context | Opt-in | GENESIS_ENABLE_P68_AUTO_FORCE_TOOL |
-| P69 | Long-context tool-format reminder injection | Opt-in | GENESIS_ENABLE_P69_LONG_CTX_TOOL_REMINDER |
-| PN70 | Tool schema subset filter | Opt-in | GENESIS_ENABLE_PN70_TOOL_SCHEMA_FILTER |
-| PN72 | Frequency-based ngram draft post-filter | Opt-in | GENESIS_ENABLE_PN72_FREQUENCY_NGRAM_DRAFTER |
+| P15 | Qwen3 None/null tool arg parser | **MERGED** (ac2b0f2d6) | — |
+| ~~P12~~ | ~~Qwen3 `` implicit reasoning end~~ | ~~Default ON~~ | ~~—~~ |
+| ~~P27~~ | ~~Qwen3 BEFORE-THINK fallback~~ | ~~Default ON~~ | ~~—~~ |
+| ~~P29~~ | ~~tool parser IndexError guard~~ | ~~Default ON~~ | ~~—~~ |
+| ~~P61c~~ | ~~Qwen3Coder deferred-commit until `<function=` header~~ | ~~Opt-in~~ | ~~GENESIS_ENABLE_P61C_QWEN3CODER_DEFERRED_COMMIT~~ |
+| ~~P68~~ | ~~Auto force tool_choice=required for long-context~~ | ~~Opt-in~~ | ~~GENESIS_ENABLE_P68_AUTO_FORCE_TOOL~~ |
+| ~~P69~~ | ~~Long-context tool-format reminder injection~~ | ~~Opt-in~~ | ~~GENESIS_ENABLE_P69_LONG_CTX_TOOL_REMINDER~~ |
+| ~~PN70~~ | ~~Tool schema subset filter~~ | ~~Opt-in~~ | ~~GENESIS_ENABLE_PN70_TOOL_SCHEMA_FILTER~~ |
+| ~~PN72~~ | ~~Frequency-based ngram draft post-filter~~ | ~~Opt-in~~ | ~~GENESIS_ENABLE_PN72_FREQUENCY_NGRAM_DRAFTER~~ |
+
+**Notes**:
+- P12/P27/P29: Superseded by new parser architecture (vLLM >=0.23.0)
+- P61c/P64/PN56: Version-gated (<0.23.0), qwen3coder_tool_parser.py removed in dev148-era engine
+- P68/P69: Require Genesis middleware infrastructure (not standalone-applicable)
+- PN70/PN72: Require Genesis kernel modules (not standalone-applicable)
 
 ## Abandoned
 
@@ -85,7 +93,10 @@ XPU (#45779), Gemma (#46426, #46443), DeepSeek (#45452, #45149), MiniMax (#46816
 
 | Category | Upstream PRs | Genesis Patches | Total |
 |---|---|---|---|
-| MTP / Spec Decode | 8 | 7 | 15 |
-| NVFP4 | 9 | 3 | 12 |
-| Qwen Tool Calls | 0 | 9 | 9 |
+| MTP / Spec Decode | 8 | ~~7~~ | 15 |
+| NVFP4 | 9 | ~~3~~ | 12 |
+| Qwen Tool Calls | 0 | ~~9~~ | 9 |
 | **Total** | **17** | **19** | **36** |
+
+**Active Genesis patches** (standalone-applicable): P15, PN61 (2 of 19)
+**Struck-off**: Version-gated (<0.23.0), superseded by upstream, or require Genesis infrastructure
