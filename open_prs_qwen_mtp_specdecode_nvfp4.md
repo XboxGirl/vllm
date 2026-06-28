@@ -24,17 +24,16 @@ Sources: vllm-project/vllm PRs + genesis-vllm-patches (Genesis-original only)
 |---|---|---|---|
 | P65 | TurboQuant spec-decode cudagraph downgrade | **MERGED** (eb7eb8331) | GENESIS_ENABLE_P65_TURBOQUANT_SPEC_CG_DOWNGRADE |
 | P66 | cudagraph_capture_sizes spec-decode divisibility filter | **MERGED** (ebe26d141) | GENESIS_ENABLE_P66_CUDAGRAPH_SIZE_FILTER |
-| P67 | TurboQuant multi-query kernel for spec-decode K+1 | Research | GENESIS_ENABLE_P67_TQ_MULTI_QUERY_KERNEL |
-| P83 | MTP keep-last-cached-block (vllm#38182 symptom) | Research | GENESIS_ENABLE_P83 |
+| P67 | TurboQuant multi-query kernel for spec-decode K+1 | **MERGED** (891e8a0e3) | GENESIS_ENABLE_P67_TQ_MULTI_QUERY_KERNEL |
+| P83 | MTP keep-last-cached-block (vllm#38182 symptom) | Requires KV cache manager changes | GENESIS_ENABLE_P83 |
 | ~~P84~~ | ~~hash_block_size override (vllm#38182 root cause)~~ | ~~Already upstream as `hash_block_size` config option~~ | — |
-| P85 | Hybrid fine-shadow prefix cache (MambaManager fix) | Research | GENESIS_ENABLE_P85 |
+| P85 | Hybrid fine-shadow prefix cache (MambaManager fix) | Requires MambaManager changes | GENESIS_ENABLE_P85 |
 | ~~PN102~~ | ~~Unified spec-decode metadata + disagreement tracker~~ | ~~Requires Genesis kernel infrastructure~~ | — |
 
 **Notes**:
-- P65/P66: Standalone text patches, applied directly
-- P67: Requires custom Triton kernel module (p67_multi_query_kernel.py)
-- P83: Requires modifying `use_eagle()` to distinguish MTP from Eagle/Eagle3
-- P85: Requires MambaManager cache_blocks + find_longest_cache_hit modifications
+- P65/P66/P67: Standalone patches, applied directly
+- P83: Requires modifying `use_eagle()` to distinguish MTP from Eagle/Eagle3 (multi-file change)
+- P85: Requires MambaManager cache_blocks + find_longest_cache_hit modifications (complex multi-site patch)
 
 ## NVFP4 (12 total)
 
