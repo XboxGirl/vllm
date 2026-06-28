@@ -649,6 +649,26 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
     ) -> torch.Tensor:
         N, Hq, D = query.shape
 
+        # [Genesis P67] Multi-query continuation prefill hook.
+        # If batch is K+1 spec-verify continuation (multi-query AND has prior
+        # cached KV) AND env GENESIS_ENABLE_P67_TQ_MULTI_QUERY_KERNEL=1,
+        # route to our Triton kernel that handles compressed cache directly
+        # under FULL cudagraph (proper fix vs P65 workaround).
+        try:
+            from vllm.v1.attention.backends.turboquant.p67_multi_query_kernel import (
+                try_p67_dispatch,
+                is_enabled as _p67_is_enabled,
+            )
+            if _p67_is_enabled():
+                p67_result = try_p67_dispatch(
+                    query, key, value, attn_metadata, self.kv_cache_spec
+                )
+                if p67_result is not None:
+                    return p67_result
+        except Exception:
+            # P67 dispatch failure is non-fatal — fall through to eager path.
+            pass
+
         # Fast path: use flash_attn for first-chunk prefills (all K/V in batch).
         # max_query_len == max_seq_len means no request has prior cached KV.
         # Both are Python ints — no GPU sync.

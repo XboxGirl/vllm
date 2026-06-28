@@ -22,18 +22,19 @@ Sources: vllm-project/vllm PRs + genesis-vllm-patches (Genesis-original only)
 
 | ID | Title | Status | Env Flag |
 |---|---|---|---|
-| P65 | TurboQuant spec-decode cudagraph downgrade | Opt-in | GENESIS_ENABLE_P65_TURBOQUANT_SPEC_CG_DOWNGRADE |
-| P66 | cudagraph_capture_sizes spec-decode divisibility filter | Opt-in | GENESIS_ENABLE_P66_CUDAGRAPH_SIZE_FILTER |
-| P67 | TurboQuant multi-query kernel for spec-decode K+1 | Opt-in | GENESIS_ENABLE_P67_TQ_MULTI_QUERY_KERNEL |
+| P65 | TurboQuant spec-decode cudagraph downgrade | **MERGED** (eb7eb8331) | GENESIS_ENABLE_P65_TURBOQUANT_SPEC_CG_DOWNGRADE |
+| P66 | cudagraph_capture_sizes spec-decode divisibility filter | **MERGED** (ebe26d141) | GENESIS_ENABLE_P66_CUDAGRAPH_SIZE_FILTER |
+| P67 | TurboQuant multi-query kernel for spec-decode K+1 | Research | GENESIS_ENABLE_P67_TQ_MULTI_QUERY_KERNEL |
 | P83 | MTP keep-last-cached-block (vllm#38182 symptom) | Research | GENESIS_ENABLE_P83 |
 | ~~P84~~ | ~~hash_block_size override (vllm#38182 root cause)~~ | ~~Already upstream as `hash_block_size` config option~~ | — |
 | P85 | Hybrid fine-shadow prefix cache (MambaManager fix) | Research | GENESIS_ENABLE_P85 |
 | ~~PN102~~ | ~~Unified spec-decode metadata + disagreement tracker~~ | ~~Requires Genesis kernel infrastructure~~ | — |
 
 **Notes**:
-- P65/P66/P67: Require TurboQuant Triton kernel modules (custom kernels not standalone-applicable)
-- P83: Requires modifying `use_eagle()` logic to distinguish MTP from Eagle/Eagle3
-- P85: Requires MambaManager fine-shadow hash registration (complex KV cache changes)
+- P65/P66: Standalone text patches, applied directly
+- P67: Requires custom Triton kernel module (p67_multi_query_kernel.py)
+- P83: Requires modifying `use_eagle()` to distinguish MTP from Eagle/Eagle3
+- P85: Requires MambaManager cache_blocks + find_longest_cache_hit modifications
 
 ## NVFP4 (12 total)
 
@@ -68,14 +69,14 @@ Sources: vllm-project/vllm PRs + genesis-vllm-patches (Genesis-original only)
 | ID | Title | Status | Env Flag |
 |---|---|---|---|
 | P15 | Qwen3 None/null tool arg parser | **MERGED** (ac2b0f2d6) | — |
-| ~~P12~~ | ~~Qwen3 `` implicit reasoning end~~ | ~~Default ON~~ | ~~—~~ |
-| ~~P27~~ | ~~Qwen3 BEFORE-THINK fallback~~ | ~~Default ON~~ | ~~—~~ |
-| ~~P29~~ | ~~tool parser IndexError guard~~ | ~~Default ON~~ | ~~—~~ |
-| ~~P61c~~ | ~~Qwen3Coder deferred-commit until `<function=` header~~ | ~~Opt-in~~ | ~~GENESIS_ENABLE_P61C_QWEN3CODER_DEFERRED_COMMIT~~ |
-| ~~P68~~ | ~~Auto force tool_choice=required for long-context~~ | ~~Opt-in~~ | ~~GENESIS_ENABLE_P68_AUTO_FORCE_TOOL~~ |
-| ~~P69~~ | ~~Long-context tool-format reminder injection~~ | ~~Opt-in~~ | ~~GENESIS_ENABLE_P69_LONG_CTX_TOOL_REMINDER~~ |
-| ~~PN70~~ | ~~Tool schema subset filter~~ | ~~Opt-in~~ | ~~GENESIS_ENABLE_PN70_TOOL_SCHEMA_FILTER~~ |
-| ~~PN72~~ | ~~Frequency-based ngram draft post-filter~~ | ~~Opt-in~~ | ~~GENESIS_ENABLE_PN72_FREQUENCY_NGRAM_DRAFTER~~ |
+| ~~P12~~ | ~~Qwen3 `` implicit reasoning end~~ | ~~Already upstream in new parser~~ | — |
+| ~~P27~~ | ~~Qwen3 BEFORE-THINK fallback~~ | ~~Old parser architecture superseded~~ | — |
+| ~~P29~~ | ~~tool parser IndexError guard~~ | ~~Already upstream in new parser~~ | — |
+| ~~P61c~~ | ~~Qwen3Coder deferred-commit until `<function=` header~~ | ~~Version-gated (<0.23.0)~~ | — |
+| P68 | Auto force tool_choice=required for long-context | **MERGED** (99be29ff2) | GENESIS_ENABLE_P68_AUTO_FORCE_TOOL |
+| P69 | Long-context tool-format reminder injection | **MERGED** (99be29ff2) | GENESIS_ENABLE_P69_LONG_CTX_TOOL_REMINDER |
+| ~~PN70~~ | ~~Tool schema subset filter~~ | ~~Requires middleware infrastructure~~ | — |
+| PN72 | Frequency-based ngram draft post-filter | **MERGED** (8d81ba4e7) | GENESIS_ENABLE_PN72_FREQUENCY_NGRAM_DRAFTER |
 
 **Notes**:
 - P12/P27/P29: Superseded by new parser architecture (vLLM >=0.23.0)
