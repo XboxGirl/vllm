@@ -85,6 +85,7 @@ Sources: vllm-project/vllm PRs + genesis-vllm-patches (Genesis-original only)
 - P68/P69: Applied as standalone middleware (long_ctx_tool_adherence.py)
 - PN70: Applied as standalone filter (pn70_tool_schema_subset_filter.py)
 - PN72: Applied as standalone filter (ngram_frequency_filter.py)
+- **Upstream verification (2026-06-28)**: Checked vLLM GitHub for PRs addressing these issues. Issue #38182 (MTP prefix cache) is OPEN. PR #45614 (Mamba prefix cache EAGLE hit) is OPEN. PR #42904 (xgrammar patternProperties) is OPEN. No merged PRs supersede the Genesis patches.
 
 ## Abandoned
 
