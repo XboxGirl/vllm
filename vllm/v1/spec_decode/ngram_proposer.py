@@ -167,6 +167,23 @@ class NgramProposer:
             num_speculative_tokens,
         )
 
+        # [Genesis PN72] Post-filter drafts by first-token frequency.
+        # Rejects drafts where first token appears < N times in recent
+        # context window. Prevents spurious ngram matches from corrupting
+        # tool calls. Opt-in via GENESIS_ENABLE_PN72_FREQUENCY_NGRAM_DRAFTER=1.
+        try:
+            from vllm.v1.spec_decode.ngram_frequency_filter import (
+                filter_with_env,
+                is_enabled,
+            )
+            if is_enabled():
+                draft_token_ids = filter_with_env(
+                    draft_token_ids, num_tokens_no_spec, token_ids_cpu
+                )
+        except Exception:
+            # Filter failure is non-fatal — return unfiltered drafts.
+            pass
+
         return draft_token_ids
 
     def load_model(self, *args, **kwargs):
