@@ -30,6 +30,11 @@ Sources: vllm-project/vllm PRs + genesis-vllm-patches (Genesis-original only)
 | P85 | Hybrid fine-shadow prefix cache (MambaManager fix) | Research | GENESIS_ENABLE_P85 |
 | ~~PN102~~ | ~~Unified spec-decode metadata + disagreement tracker~~ | ~~Requires Genesis kernel infrastructure~~ | — |
 
+**Notes**:
+- P65/P66/P67: Require TurboQuant Triton kernel modules (custom kernels not standalone-applicable)
+- P83: Requires modifying `use_eagle()` logic to distinguish MTP from Eagle/Eagle3
+- P85: Requires MambaManager fine-shadow hash registration (complex KV cache changes)
+
 ## NVFP4 (12 total)
 
 ### Upstream PRs (9)
