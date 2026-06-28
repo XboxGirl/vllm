@@ -234,6 +234,7 @@ fn request_output(
         prefill_stats: None,
         routed_experts: None,
         num_nans_in_logits: 0,
+        request_spec_decode_stats: None,
     }
 }
 
@@ -2502,6 +2503,7 @@ fn python_msgpack_fixtures_match_rust_encoding() {
 
     let decoded_outputs: EngineCoreOutputs = rmp_serde::from_slice(&outputs_bytes).unwrap();
     expect_test::expect![[r#"
+<<<<<<< HEAD
         RequestBatch(
             RequestBatchOutputs {
                 engine_index: 0,
@@ -2537,6 +2539,44 @@ fn python_msgpack_fixtures_match_rust_encoding() {
                 ),
             },
         )
+=======
+        EngineCoreOutputs {
+            engine_index: 0,
+            outputs: [
+                EngineCoreOutput {
+                    request_id: "req-1",
+                    new_token_ids: [
+                        7,
+                        8,
+                    ],
+                    new_logprobs: None,
+                    new_prompt_logprobs_tensors: None,
+                    pooling_output: None,
+                    finish_reason: Some(
+                        Length,
+                    ),
+                    stop_reason: None,
+                    events: None,
+                    kv_transfer_params: None,
+                    trace_headers: None,
+                    prefill_stats: None,
+                    routed_experts: None,
+                    num_nans_in_logits: 0,
+                    request_spec_decode_stats: None,
+                },
+            ],
+            scheduler_stats: None,
+            timestamp: 0.0,
+            utility_output: None,
+            finished_requests: Some(
+                {
+                    "req-1",
+                },
+            ),
+            wave_complete: None,
+            start_wave: None,
+        }
+>>>>>>> e4691ff8c (Add per-request speculative decode metrics (#43310))
     "#]]
     .assert_debug_eq(&decoded_outputs);
 

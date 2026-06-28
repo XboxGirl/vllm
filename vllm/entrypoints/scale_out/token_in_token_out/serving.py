@@ -45,6 +45,7 @@ from vllm.outputs import RequestOutput
 from vllm.renderers.online_renderer import OnlineRenderer
 from vllm.sampling_params import RequestOutputKind, SamplingParams
 from vllm.utils.collection_utils import as_list
+from vllm.v1.metrics.stats import RequestSpecDecodeStats
 
 from .mm_serde import decode_mm_kwargs_item
 from .protocol import (
@@ -320,6 +321,10 @@ class ServingTokens(GenerateBaseServing):
                 cached_tokens=final_res.num_cached_tokens
             )
 
+        request_spec_decode_stats: RequestSpecDecodeStats | None = None
+        if final_res.metrics is not None:
+            request_spec_decode_stats = final_res.metrics.request_spec_decode_stats
+
         request_metadata.final_usage_info = usage
 
         response = GenerateResponse(
@@ -330,7 +335,11 @@ class ServingTokens(GenerateBaseServing):
             usage=usage,
             prompt_logprobs=clamp_prompt_logprobs(final_res.prompt_logprobs),
             kv_transfer_params=final_res.kv_transfer_params,
+<<<<<<< HEAD:vllm/entrypoints/scale_out/token_in_token_out/serving.py
             ec_transfer_params=final_res.ec_transfer_params,
+=======
+            request_spec_decode_stats=request_spec_decode_stats,
+>>>>>>> e4691ff8c (Add per-request speculative decode metrics (#43310)):vllm/entrypoints/serve/disagg/serving.py
         )
 
         # Log complete response if output logging is enabled
@@ -366,6 +375,7 @@ class ServingTokens(GenerateBaseServing):
         num_generated_tokens: list[int] = []
         first_iteration = True
         num_cached_tokens = None
+        request_spec_decode_stats: RequestSpecDecodeStats | None = None
         sampling_params: SamplingParams = request.sampling_params
 
         include_usage, include_continuous_usage = should_include_usage(
@@ -374,6 +384,8 @@ class ServingTokens(GenerateBaseServing):
 
         try:
             async for res in result_generator:
+                if res.metrics is not None:
+                    request_spec_decode_stats = res.metrics.request_spec_decode_stats
                 if first_iteration:
                     if res.prompt_token_ids is not None:
                         num_prompt_tokens = len(res.prompt_token_ids)
@@ -424,6 +436,7 @@ class ServingTokens(GenerateBaseServing):
                                 routed_experts=routed_experts_b64,
                             )
                         ],
+                        request_spec_decode_stats=request_spec_decode_stats,
                     )
                     if include_continuous_usage:
                         chunk.usage = UsageInfo(
@@ -451,6 +464,7 @@ class ServingTokens(GenerateBaseServing):
                     request_id=request_id,
                     choices=[],
                     usage=final_usage_info,
+                    request_spec_decode_stats=request_spec_decode_stats,
                 )
                 yield f"data: {final_chunk.model_dump_json(exclude_none=True)}\n\n"
 

@@ -11,16 +11,13 @@ from pydantic import (
 )
 
 from vllm.config import ModelConfig
-from vllm.entrypoints.openai.chat_completion.protocol import (
-    ChatCompletionLogProbs,
-    ChatCompletionRequest,
-)
-from vllm.entrypoints.openai.completion.protocol import CompletionRequest
+from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionLogProbs
 from vllm.entrypoints.openai.engine.protocol import StreamOptions, UsageInfo
 from vllm.logprobs import Logprob
 from vllm.renderers import TokenizeParams
 from vllm.sampling_params import SamplingParams
 from vllm.utils import random_uuid
+from vllm.v1.metrics.stats import RequestSpecDecodeStats
 
 ####### Tokens IN <> Tokens OUT #######
 
@@ -75,27 +72,12 @@ class GenerateRequest(BaseModel):
     token_ids: list[int] = Field(min_length=1)
     """The token ids to generate text from."""
 
-    assistant_tokens_mask: list[int] | None = None
-    """Per-token mask (1 = assistant-generated, 0 = not).
-
-    Only populated when the render request sets ``return_assistant_tokens_mask=True``
-    and the chat template supports ``{% generation %}``.
-    ``None`` when the mask was not requested or could not be computed.
-    """
-
     @field_validator("token_ids")
     @classmethod
     def validate_token_ids(cls, v: list[int]) -> list[int]:
         if any(t < 0 for t in v):
             raise ValueError("token_ids must not contain negative values")
         return v
-
-    token_offsets: list[tuple[int, int]] | None = None
-    """Char-level (start, end) offsets per token, relative to the
-    tokenized source string. Present only when the request set
-    `return_token_offsets=True` and the renderer was able to compute
-    them (Fast tokenizer, text input, no multimodal data). List length
-    equals `token_ids` length when present. None otherwise."""
 
     features: MultiModalFeatures | None = None
     """Multimodal hashes and placeholder positions (populated for MM inputs)."""
@@ -209,7 +191,6 @@ class GenerateResponseStreamChoice(BaseModel):
     logprobs: ChatCompletionLogProbs | None = None
     finish_reason: str | None = None
     token_ids: list[int] | None = None
-    routed_experts: str | None = None
 
 
 class GenerateStreamResponse(BaseModel):
@@ -223,6 +204,7 @@ class GenerateStreamResponse(BaseModel):
     )
     choices: list[GenerateResponseStreamChoice]
     usage: UsageInfo | None = Field(default=None)
+    request_spec_decode_stats: RequestSpecDecodeStats | None = Field(default=None)
 
 
 class GenerateResponse(BaseModel):
@@ -244,6 +226,7 @@ class GenerateResponse(BaseModel):
         default=None,
         description="KVTransfer parameters used for disaggregated serving.",
     )
+<<<<<<< HEAD:vllm/entrypoints/scale_out/token_in_token_out/protocol.py
     ec_transfer_params: dict[str, Any] | None = Field(
         default=None,
         description=(
@@ -330,3 +313,6 @@ class DerenderCompletionRequest(BaseModel):
                 f"generate_responses length ({len(self.generate_responses)})"
             )
         return self
+=======
+    request_spec_decode_stats: RequestSpecDecodeStats | None = Field(default=None)
+>>>>>>> e4691ff8c (Add per-request speculative decode metrics (#43310)):vllm/entrypoints/serve/disagg/protocol.py
