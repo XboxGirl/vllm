@@ -36,6 +36,7 @@ class AttentionSelectorConfig(NamedTuple):
     use_non_causal: bool = False
     use_batch_invariant: bool = False
     use_kv_connector: bool = False
+    head_size_v: int | None = None
 
     def __repr__(self):
         return (
