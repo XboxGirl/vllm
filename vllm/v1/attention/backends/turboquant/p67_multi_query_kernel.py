@@ -812,9 +812,7 @@ def is_active() -> bool:
     mutates env and needs a re-check."""
     global _CACHED_IS_ACTIVE
     if _CACHED_IS_ACTIVE is None:
-        if not _env_enabled():
-            _CACHED_IS_ACTIVE = False
-        elif _get_kernel() is None:
+        if not _env_enabled() or _get_kernel() is None:
             _CACHED_IS_ACTIVE = False
         else:
             _CACHED_IS_ACTIVE = True

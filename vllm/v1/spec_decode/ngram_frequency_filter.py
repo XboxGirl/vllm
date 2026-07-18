@@ -40,7 +40,6 @@ import os
 
 import numpy as np
 
-
 # ─── Defaults (mirror llama.cpp lax-mode for ngram_max=4) ─────────────
 
 

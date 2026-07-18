@@ -656,8 +656,10 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
         # under FULL cudagraph (proper fix vs P65 workaround).
         try:
             from vllm.v1.attention.backends.turboquant.p67_multi_query_kernel import (
-                try_p67_dispatch,
                 is_enabled as _p67_is_enabled,
+            )
+            from vllm.v1.attention.backends.turboquant.p67_multi_query_kernel import (
+                try_p67_dispatch,
             )
             if _p67_is_enabled():
                 p67_result = try_p67_dispatch(
