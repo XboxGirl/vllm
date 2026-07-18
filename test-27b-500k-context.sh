@@ -34,7 +34,7 @@ echo "FlashInfer cache:       $VLLM_FLASHINFER_AUTOTUNE_CACHE_DIR"
 # assertion on Blackwell while upstream XQA decode support is still being
 # finalized in vllm-project/vllm#43232.
 vllm serve \
-    "sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP" \
+    "unsloth/Qwen3.6-27B-NVFP4" \
     --served-model-name qwen-3.6-27b \
     --port 8000 \
     --enable-auto-tool-choice \
@@ -44,9 +44,7 @@ vllm serve \
     --hf-overrides '{"text_config": {"rope_parameters": {"mrope_interleaved": true, "mrope_section": [11, 11, 10], "rope_type": "yarn", "rope_theta": 10000000, "partial_rotary_factor": 0.25, "factor": 2.0, "original_max_position_embeddings": 262144}}}' \
     --kv-cache-dtype fp8_e4m3 \
     --language-model-only \
-    --gpu-memory-utilization 0.90 \
-    --dtype=auto \
-    --quantization=modelopt \
+    --gpu-memory-utilization 0.95 \
     --max-num-seqs 3 \
     --max-num-batched-tokens 16384 \
     --chat-template qwen-3.6-enhanced.jinja \
@@ -54,4 +52,7 @@ vllm serve \
     --speculative-config '{"method": "mtp", "num_speculative_tokens": 3}' \
     --enable-prefix-caching \
     --override-generation-config '{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"presence_penalty":0.0,"repetition_penalty":1.0}'
+
+#    --dtype=auto \
+#    --quantization=modelopt \
 #    --attention-config.disable_flashinfer_q_quantization true

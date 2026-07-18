@@ -335,11 +335,7 @@ class ServingTokens(GenerateBaseServing):
             usage=usage,
             prompt_logprobs=clamp_prompt_logprobs(final_res.prompt_logprobs),
             kv_transfer_params=final_res.kv_transfer_params,
-<<<<<<< HEAD:vllm/entrypoints/scale_out/token_in_token_out/serving.py
-            ec_transfer_params=final_res.ec_transfer_params,
-=======
-            request_spec_decode_stats=request_spec_decode_stats,
->>>>>>> e4691ff8c (Add per-request speculative decode metrics (#43310)):vllm/entrypoints/serve/disagg/serving.py
+ec_transfer_params=final_res.ec_transfer_params,
         )
 
         # Log complete response if output logging is enabled

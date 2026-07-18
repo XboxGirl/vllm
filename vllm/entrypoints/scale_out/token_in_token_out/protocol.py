@@ -11,13 +11,16 @@ from pydantic import (
 )
 
 from vllm.config import ModelConfig
-from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionLogProbs
+from vllm.entrypoints.openai.chat_completion.protocol import (
+    ChatCompletionLogProbs,
+    ChatCompletionRequest,
+)
+from vllm.entrypoints.openai.completion.protocol import CompletionRequest
 from vllm.entrypoints.openai.engine.protocol import StreamOptions, UsageInfo
 from vllm.logprobs import Logprob
 from vllm.renderers import TokenizeParams
 from vllm.sampling_params import SamplingParams
 from vllm.utils import random_uuid
-from vllm.v1.metrics.stats import RequestSpecDecodeStats
 
 ####### Tokens IN <> Tokens OUT #######
 
@@ -204,7 +207,6 @@ class GenerateStreamResponse(BaseModel):
     )
     choices: list[GenerateResponseStreamChoice]
     usage: UsageInfo | None = Field(default=None)
-    request_spec_decode_stats: RequestSpecDecodeStats | None = Field(default=None)
 
 
 class GenerateResponse(BaseModel):
@@ -226,8 +228,7 @@ class GenerateResponse(BaseModel):
         default=None,
         description="KVTransfer parameters used for disaggregated serving.",
     )
-<<<<<<< HEAD:vllm/entrypoints/scale_out/token_in_token_out/protocol.py
-    ec_transfer_params: dict[str, Any] | None = Field(
+ec_transfer_params: dict[str, Any] | None = Field(
         default=None,
         description=(
             "ECTransfer parameters used for encoder-cache disaggregated serving."
@@ -313,6 +314,3 @@ class DerenderCompletionRequest(BaseModel):
                 f"generate_responses length ({len(self.generate_responses)})"
             )
         return self
-=======
-    request_spec_decode_stats: RequestSpecDecodeStats | None = Field(default=None)
->>>>>>> e4691ff8c (Add per-request speculative decode metrics (#43310)):vllm/entrypoints/serve/disagg/protocol.py
