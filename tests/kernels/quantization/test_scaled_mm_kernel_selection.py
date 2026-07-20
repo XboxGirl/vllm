@@ -15,9 +15,14 @@ import torch
 from vllm.model_executor.kernels.linear import (
     AiterInt8ScaledMMLinearKernel,
     CPUInt8ScaledMMLinearKernel,
+    FlashInferB12xNvFp4LinearKernel,
     Int8ScaledMMLinearKernel,
     Int8ScaledMMLinearLayerConfig,
+    NvFp4LinearKernel,
     ScaledMMLinearKernel,
+    _filter_kernels_by_backend,
+    _POSSIBLE_NVFP4_KERNELS,
+    _resolve_backend_kernels,
     init_int8_linear_kernel,
     register_linear_kernel,
 )
@@ -91,6 +96,24 @@ def test_cpu_kernel_accepts_all_configs():
         assert can_impl, (
             f"CPUInt8ScaledMMLinearKernel should accept config {config}: {reason}"
         )
+
+
+@patch("vllm.model_executor.kernels.linear._get_linear_backend")
+def test_linear_backend_falls_back_for_uncovered_layer_type(get_backend):
+    get_backend.return_value = "flashinfer_b12x"
+    kernels = [CPUInt8ScaledMMLinearKernel]
+
+    assert _resolve_backend_kernels(kernels, "scaled-mm") == kernels
+
+
+def test_flashinfer_b12x_filters_nvfp4_kernels():
+    filtered = _filter_kernels_by_backend(
+        "flashinfer_b12x",
+        _POSSIBLE_NVFP4_KERNELS[PlatformEnum.CUDA],
+    )
+
+    assert filtered == [FlashInferB12xNvFp4LinearKernel]
+    assert issubclass(filtered[0], NvFp4LinearKernel)
 
 
 class OOTInt8ScaledMMLinearKernel(Int8ScaledMMLinearKernel):
