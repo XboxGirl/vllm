@@ -42,7 +42,7 @@ RUN apt-get update -y \
     && uv venv --seed /opt/venv --python "${PYTHON_VERSION}" \
     && ln -sf /opt/venv/bin/python /usr/local/bin/python3
 
-COPY dist/*.whl /tmp/vllm-wheel/
+COPY --from=vllm_wheel *.whl /tmp/vllm-wheel/
 
 RUN --mount=type=cache,target=/opt/uv/cache \
     set -eux; \

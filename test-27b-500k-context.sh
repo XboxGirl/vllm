@@ -20,6 +20,8 @@ export VLLM_FLASHINFER_AUTOTUNE_CACHE_DIR="$SCRIPT_DIR/cache/test-27b/flashinfer
 export TRITON_CACHE_DIR="$SCRIPT_DIR/cache/test-27b/triton"
 export TORCHINDUCTOR_CACHE_DIR="$SCRIPT_DIR/cache/test-27b/torchinductor"
 
+export CUTE_DSL_ARCH=sm_120a
+
 mkdir -p "$TRITON_CACHE_DIR" "$VLLM_CACHE_ROOT" \
     "$TORCHINDUCTOR_CACHE_DIR" "$VLLM_FLASHINFER_AUTOTUNE_CACHE_DIR" \
     "$FLASHINFER_COMPILE_CACHE_DIR"
@@ -44,15 +46,18 @@ vllm serve \
     --hf-overrides '{"text_config": {"rope_parameters": {"mrope_interleaved": true, "mrope_section": [11, 11, 10], "rope_type": "yarn", "rope_theta": 10000000, "partial_rotary_factor": 0.25, "factor": 2.0, "original_max_position_embeddings": 262144}}}' \
     --kv-cache-dtype fp8_e4m3 \
     --language-model-only \
-    --gpu-memory-utilization 0.95 \
     --max-num-seqs 3 \
     --max-num-batched-tokens 16384 \
     --chat-template qwen-3.6-enhanced.jinja \
     --default-chat-template-kwargs '{"preserve_thinking": true, "enable_thinking": true}' \
     --speculative-config '{"method": "mtp", "num_speculative_tokens": 3}' \
     --enable-prefix-caching \
-    --override-generation-config '{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"presence_penalty":0.0,"repetition_penalty":1.0}'
+    --override-generation-config '{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"presence_penalty":0.0,"repetition_penalty":1.0}' \
+    --linear-backend flashinfer_b12x \
+    --moe-backend flashinfer_b12x \
+    --kv-cache-memory=72000000000
 
+#    --gpu-memory-utilization 0.95 \
 #    --dtype=auto \
 #    --quantization=modelopt \
 #    --attention-config.disable_flashinfer_q_quantization true

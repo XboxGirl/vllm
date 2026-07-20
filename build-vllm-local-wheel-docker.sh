@@ -19,6 +19,7 @@ echo "  INSTALL_DEPS=${install_deps}"
 echo "  Wheel: $(find dist -maxdepth 1 -name 'vllm*.whl' -print)"
 
 docker build \
+    --build-context vllm_wheel=dist \
     --build-arg BASE_IMAGE="${base_image}" \
     --build-arg INSTALL_DEPS="${install_deps}" \
     -t "${image_tag}" \
