@@ -29,6 +29,8 @@ from vllm.model_executor.layers.quantization.utils.nvfp4_emulation_utils import 
     kE2M1ToFloat_handle,
 )
 from vllm.model_executor.layers.quantization.utils.quant_utils import (
+    kNvfp4Dynamic,
+    kNvfp4Static,
     QuantKey,
 )
 
@@ -531,6 +533,32 @@ def make_nvfp4_moe_kernel(
     layer: torch.nn.Module | None = None,
     per_token_activation: bool = False,
 ) -> mk.FusedMoEKernel:
+    extra_kwargs = {}
+    if backend == NvFp4MoeBackend.HUMMING:
+        assert layer is not None
+        extra_kwargs = {"layer": layer}
+    if backend == NvFp4MoeBackend.FLASHINFER_TRTLLM and per_token_activation:
+        if issubclass(experts_cls, mk.FusedMoEExpertsModular):
+            from vllm.model_executor.layers.fused_moe.experts.trtllm_nvfp4_moe import (
+                TrtLlmNvFp4ExpertsMonolithic,
+            )
+
+            supported, reason = TrtLlmNvFp4ExpertsMonolithic.is_supported_config(
+                TrtLlmNvFp4ExpertsMonolithic,
+                moe_config,
+                kNvfp4Static,
+                kNvfp4Dynamic,
+                mk.FusedMoEActivationFormat.Standard,
+            )
+            if not supported:
+                raise ValueError(
+                    "NVFP4 per-token activation requires the monolithic "
+                    "FlashInfer TRTLLM MoE path, but it is not supported for "
+                    f"this configuration: {reason}."
+                )
+            experts_cls = TrtLlmNvFp4ExpertsMonolithic
+        extra_kwargs["per_token_activation"] = True
+
     # Create Prepare/Finalize.
     prepare_finalize = maybe_make_prepare_finalize(
         moe=moe_config,
@@ -542,13 +570,6 @@ def make_nvfp4_moe_kernel(
     assert prepare_finalize is not None
 
     logger.info_once("Using %s", prepare_finalize.__class__.__name__)
-
-    extra_kwargs = {}
-    if backend == NvFp4MoeBackend.HUMMING:
-        assert layer is not None
-        extra_kwargs = {"layer": layer}
-    if backend == NvFp4MoeBackend.FLASHINFER_TRTLLM and per_token_activation:
-        extra_kwargs["per_token_activation"] = True
 
     # Create Experts.
     if prepare_finalize.activation_format == mk.FusedMoEActivationFormat.BatchedExperts:

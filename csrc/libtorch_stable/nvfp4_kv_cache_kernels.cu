@@ -20,6 +20,8 @@
 #include "libtorch_stable/dispatch_utils.h"
 #include "libtorch_stable/torch_utils.h"
 
+#include <string>
+
 namespace vllm {
 
 // Compute swizzled scale offset for SM100 trtllm-gen MHA kernel.
@@ -187,7 +189,9 @@ void reshape_and_cache_nvfp4_dispatch(torch::stable::Tensor& key,
                                       torch::stable::Tensor& value_cache,
                                       torch::stable::Tensor& slot_mapping,
                                       torch::stable::Tensor& k_scale,
-                                      torch::stable::Tensor& v_scale) {
+                                      torch::stable::Tensor& v_scale,
+                                      const std::string& kv_cache_dtype) {
+  (void)kv_cache_dtype;
   int num_tokens = slot_mapping.size(0);
   int num_heads = key.size(1);
   int head_size = key.size(2);

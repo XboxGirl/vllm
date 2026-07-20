@@ -181,6 +181,26 @@ class TestTurboQuantConfig:
         assert cfg.slot_size_aligned >= cfg.slot_size
         assert cfg.slot_size_aligned % 2 == 0
 
+    @pytest.mark.parametrize("preset", ALL_PRESETS)
+    def test_attention_backend_kv_cache_shape_is_head_major(self, preset):
+        from vllm.v1.attention.backends.turboquant_attn import (
+            TurboQuantAttentionBackend,
+        )
+
+        num_blocks = 7
+        block_size = 16
+        num_kv_heads = 3
+        head_dim = 128
+        cfg = TurboQuantConfig.from_cache_dtype(preset, head_dim=head_dim)
+
+        assert TurboQuantAttentionBackend.get_kv_cache_shape(
+            num_blocks,
+            block_size,
+            num_kv_heads,
+            head_dim,
+            preset,
+        ) == (num_blocks, num_kv_heads, block_size, cfg.slot_size_aligned)
+
     # ---- Boundary skip layers ----
 
     @staticmethod
