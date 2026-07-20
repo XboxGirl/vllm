@@ -252,8 +252,6 @@ class Scheduler(SchedulerInterface):
                 self.num_lookahead_tokens = self.num_spec_tokens
             if speculative_config.method == "mtp":
                 self.is_mtp = True
-            if speculative_config.method == "mtp":
-                self.is_mtp = True
             if speculative_config.uses_draft_model():
                 self.num_lookahead_tokens = self.num_spec_tokens
             if speculative_config.use_dflash():

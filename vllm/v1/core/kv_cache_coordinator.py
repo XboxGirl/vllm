@@ -853,13 +853,15 @@ def get_kv_cache_coordinator(
     scheduler_block_size: int,
     hash_block_size: int,
     metrics_collector: KVCacheMetricsCollector | None = None,
+    is_mtp: bool = False,
 ) -> KVCacheCoordinator:
+    use_eagle_or_mtp = use_eagle or is_mtp
     if not enable_caching:
         return KVCacheCoordinatorNoPrefixCache(
             kv_cache_config,
             max_model_len,
             max_in_flight_tokens,
-            use_eagle,
+            use_eagle_or_mtp,
             enable_kv_cache_events,
             dcp_world_size=dcp_world_size,
             pcp_world_size=pcp_world_size,
@@ -872,7 +874,7 @@ def get_kv_cache_coordinator(
             kv_cache_config,
             max_model_len,
             max_in_flight_tokens,
-            use_eagle,
+            use_eagle_or_mtp,
             enable_caching,
             enable_kv_cache_events,
             dcp_world_size=dcp_world_size,
@@ -885,7 +887,7 @@ def get_kv_cache_coordinator(
         kv_cache_config,
         max_model_len,
         max_in_flight_tokens,
-        use_eagle,
+        use_eagle_or_mtp,
         enable_caching,
         enable_kv_cache_events,
         dcp_world_size=dcp_world_size,

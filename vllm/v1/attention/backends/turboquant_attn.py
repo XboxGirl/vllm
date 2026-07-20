@@ -8,7 +8,7 @@ Decode:  Compute TQ attention scores from compressed cache,
          unpack FP16 values, softmax + weighted sum.
 
 Cache layout (no leading 2 dimension):
-  (num_blocks, block_size, num_kv_heads, slot_size)
+  (num_blocks, num_kv_heads, block_size, slot_size)
   where slot_size = key_packed_size + value_fp16_size
 
 Per-head per-position slot layout:
@@ -614,7 +614,7 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
         self,
         key: torch.Tensor,  # (N, Hk, D)
         value: torch.Tensor,  # (N, Hk, D)
-        kv_cache: torch.Tensor,  # (num_blocks, block_size, Hk, slot_size)
+        kv_cache: torch.Tensor,  # (num_blocks, Hk, block_size, slot_size)
         slot_mapping: torch.Tensor,
         layer: Any,
     ):
@@ -640,7 +640,7 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
         query: torch.Tensor,  # (N, Hq, D)
         key: torch.Tensor,  # (N, Hk, D)
         value: torch.Tensor,  # (N, Hk, D)
-        kv_cache: torch.Tensor,  # (num_blocks, block_size, Hk, slot_size)
+        kv_cache: torch.Tensor,  # (num_blocks, Hk, block_size, slot_size)
         attn_metadata: TurboQuantMetadata,
         Pi: torch.Tensor,
         centroids: torch.Tensor,
@@ -813,7 +813,7 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
         query: torch.Tensor,  # (q_len, Hq, D)
         key_chunk: torch.Tensor,  # (q_len, Hk, D)
         val_chunk: torch.Tensor,  # (q_len, Hk, D)
-        kv_cache: torch.Tensor,  # (num_blocks, block_size, Hk, slot_size)
+        kv_cache: torch.Tensor,  # (num_blocks, Hk, block_size, slot_size)
         block_table: torch.Tensor,  # (1, max_num_blocks)
         cached_len: int,
         seq_len: int,
@@ -956,7 +956,7 @@ class TurboQuantAttentionImpl(AttentionImpl["TurboQuantMetadata"]):
     def _decode_attention(
         self,
         query: torch.Tensor,  # (B, Hq, D)
-        kv_cache: torch.Tensor,  # (num_blocks, block_size, Hk, slot_size)
+        kv_cache: torch.Tensor,  # (num_blocks, Hk, block_size, slot_size)
         attn_metadata: TurboQuantMetadata,
         Pi: torch.Tensor,
         centroids: torch.Tensor,

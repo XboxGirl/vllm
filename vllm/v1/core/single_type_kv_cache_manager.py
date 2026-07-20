@@ -85,6 +85,7 @@ class SingleTypeKVCacheManager(ABC):
             HiddenStateCacheSpec,
         )
         self.new_block_ids: list[int] = []
+        self._pending_cow_copies: list[tuple[KVCacheBlock, KVCacheBlock]] = []
 
         # Mapping from request ID to blocks to track the blocks allocated
         # for each request, so that we can free the blocks when the request
@@ -116,6 +117,7 @@ class SingleTypeKVCacheManager(ABC):
         num_tokens: int,
         new_computed_blocks: Sequence[KVCacheBlock],
         total_computed_tokens: int,
+        num_local_computed_tokens: int,
         num_tokens_main_model: int,
         apply_admission_cap: bool = False,
     ) -> int:
@@ -129,6 +131,8 @@ class SingleTypeKVCacheManager(ABC):
             new_computed_blocks: The new computed blocks just hitting the
                 prefix caching.
             total_computed_tokens: Include both local and external computed
+                tokens.
+            num_local_computed_tokens: The number of local prefix-cache computed
                 tokens.
             num_tokens_main_model: The number of tokens for the main model (aka target
                 model in spec decode). w/o spec decode, it is num_tokens;
@@ -317,6 +321,19 @@ class SingleTypeKVCacheManager(ABC):
         self.new_block_ids = []
         return ids
 
+    @property
+    def records_new_block_ids(self) -> bool:
+        """Whether this manager's new blocks are zeroed by the worker."""
+        return self._record_new_block_ids
+
+    def take_pending_cow_copies(
+        self,
+    ) -> list[tuple[KVCacheBlock, KVCacheBlock]]:
+        """Drain pending CoW source and destination block pairs."""
+        pending_copies = self._pending_cow_copies
+        self._pending_cow_copies = []
+        return pending_copies
+
     def cache_blocks(
         self,
         request: Request,
@@ -439,7 +456,7 @@ class SingleTypeKVCacheManager(ABC):
         alignment_tokens: int,
         dcp_world_size: int = 1,
         pcp_world_size: int = 1,
-    ) -> tuple[list[KVCacheBlock], ...]:
+    ) -> tuple[tuple[list[KVCacheBlock], ...], int]:
         """
         Get the longest cache hit prefix of the blocks that is not longer than
         `max_length`. The prefix should be a common prefix hit for all the
@@ -610,7 +627,8 @@ class FullAttentionManager(SingleTypeKVCacheManager):
         ):
             for computed in computed_blocks:
                 computed.pop()
-        return computed_blocks
+        hit_length = len(computed_blocks[0]) * block_size
+        return computed_blocks, hit_length
 
     def get_num_common_prefix_blocks(self, running_request_id: str) -> int:
         blocks = self.req_to_blocks[running_request_id]
@@ -699,7 +717,7 @@ class SlidingWindowManager(SingleTypeKVCacheManager):
         alignment_tokens: int,
         dcp_world_size: int = 1,
         pcp_world_size: int = 1,
-    ) -> tuple[list[KVCacheBlock], ...]:
+    ) -> tuple[tuple[list[KVCacheBlock], ...], int]:
         assert isinstance(kv_cache_spec, SlidingWindowSpec), (
             "SlidingWindowManager can only be used for sliding window groups"
         )
@@ -772,7 +790,8 @@ class SlidingWindowManager(SingleTypeKVCacheManager):
             ):
                 for computed in computed_blocks:
                     computed.pop()
-        return computed_blocks
+        hit_length = len(computed_blocks[0]) * block_size
+        return computed_blocks, hit_length
 
     @classmethod
     def reachable_block_mask(
@@ -893,7 +912,7 @@ class ChunkedLocalAttentionManager(SingleTypeKVCacheManager):
         alignment_tokens: int,
         dcp_world_size: int = 1,
         pcp_world_size: int = 1,
-    ) -> tuple[list[KVCacheBlock], ...]:
+    ) -> tuple[tuple[list[KVCacheBlock], ...], int]:
         """
         For chunked local attention, we need to find the longest cache hit
         prefix of the blocks that is not longer than `max_length`. The prefix
@@ -971,7 +990,8 @@ class ChunkedLocalAttentionManager(SingleTypeKVCacheManager):
                     computed.append(cached)
             else:
                 break
-        return computed_blocks
+        hit_length = len(computed_blocks[0]) * kv_cache_spec.block_size
+        return computed_blocks, hit_length
 
     def get_num_skipped_tokens(self, num_computed_tokens: int) -> int:
         """
@@ -1057,7 +1077,7 @@ class MambaManager(SingleTypeKVCacheManager):
         alignment_tokens: int,
         dcp_world_size: int = 1,
         pcp_world_size: int = 1,
-    ) -> tuple[list[KVCacheBlock], ...]:
+    ) -> tuple[tuple[list[KVCacheBlock], ...], int]:
         assert isinstance(kv_cache_spec, MambaSpec), (
             "MambaManager can only be used for mamba groups"
         )
@@ -1100,7 +1120,8 @@ class MambaManager(SingleTypeKVCacheManager):
                     computed.append(cached)
                 break  # we just need the last match - early stopping
 
-        return computed_blocks
+        hit_length = len(computed_blocks[0]) * block_size
+        return computed_blocks, hit_length
 
     @classmethod
     def reachable_block_mask(
@@ -1198,6 +1219,7 @@ class MambaManager(SingleTypeKVCacheManager):
         num_tokens: int,
         new_computed_blocks: Sequence[KVCacheBlock],
         total_computed_tokens: int,
+        num_local_computed_tokens: int,
         num_tokens_main_model: int,
         apply_admission_cap: bool = False,
     ) -> int:
@@ -1223,6 +1245,7 @@ class MambaManager(SingleTypeKVCacheManager):
                 num_tokens,
                 new_computed_blocks,
                 total_computed_tokens,
+                num_local_computed_tokens,
                 num_tokens_main_model,
                 apply_admission_cap=apply_admission_cap,
             )

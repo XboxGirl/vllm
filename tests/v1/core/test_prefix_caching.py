@@ -131,6 +131,19 @@ def make_kv_cache_config(block_size: int, num_blocks: int) -> KVCacheConfig:
     )
 
 
+def test_kv_cache_manager_accepts_mtp_flag():
+    kv_cache_config = make_kv_cache_config(block_size=4, num_blocks=10)
+
+    manager = make_kv_cache_manager(
+        kv_cache_config,
+        max_model_len=100,
+        hash_block_size=4,
+        is_mtp=True,
+    )
+
+    assert manager.coordinator.eagle_group_ids == {0}
+
+
 def make_kv_cache_config_hybrid_model(
     block_size: int,
     num_blocks: int,

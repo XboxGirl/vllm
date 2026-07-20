@@ -358,6 +358,7 @@ class Attention(nn.Module, AttentionLayerBase):
                 use_per_head_quant_scales=use_per_head_quant_scales,
                 attn_type=attn_type,
                 has_sliding_window=sliding_window is not None,
+                head_size_v=self.head_size_v,
             )
         else:
             self.attn_backend = attn_backend

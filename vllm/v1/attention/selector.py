@@ -109,6 +109,7 @@ def get_attn_backend(
     attn_type: str | None = None,
     num_heads: int | None = None,
     has_sliding_window: bool = False,
+    head_size_v: int | None = None,
 ) -> type[AttentionBackend]:
     """Selects which attention backend to use and lazily imports it."""
 
@@ -151,6 +152,7 @@ def get_attn_backend(
         use_non_causal=vllm_config.attention_config.use_non_causal,
         use_batch_invariant=envs.VLLM_BATCH_INVARIANT,
         use_kv_connector=use_kv_connector,
+        head_size_v=head_size_v,
     )
 
     # A per-KV-group override (keyed by KVCacheSpecKind) takes precedence over

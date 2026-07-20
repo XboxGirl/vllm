@@ -45,7 +45,7 @@ def _tq_decode_stage1(
     # Precomputed query projection
     Q_rot_ptr,  # [B, Hq, D] float32
     # Compressed KV cache (combined K+V)
-    KV_cache_ptr,  # [num_blocks, block_size, Hk, padded_slot] uint8
+    KV_cache_ptr,  # [num_blocks, Hk, block_size, padded_slot] uint8
     # Block table and sequence info
     Block_table_ptr,  # [B, max_num_blocks] int32
     Seq_lens_ptr,  # [B] int32
@@ -485,7 +485,7 @@ def _get_layout(D, mse_bits, value_quant_bits, key_packed_size):
 
 def triton_turboquant_decode_attention(
     query: torch.Tensor,  # [B, Hq, D] — original query
-    kv_cache: torch.Tensor,  # [num_blocks, block_size, Hk, padded_slot] uint8
+    kv_cache: torch.Tensor,  # [num_blocks, Hk, block_size, padded_slot] uint8
     block_table: torch.Tensor,  # [B, max_num_blocks] int32
     seq_lens: torch.Tensor,  # [B] int32
     Pi: torch.Tensor,  # [D, D] float32
