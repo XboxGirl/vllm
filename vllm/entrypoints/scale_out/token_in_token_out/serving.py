@@ -14,7 +14,10 @@ import pybase64 as base64
 from fastapi import Request
 
 from vllm.engine.protocol import EngineClient
-from vllm.entrypoints.logger import RequestLogger
+from vllm.entrypoints.generate.base.serving import (
+    GenerateBaseServing,
+    clamp_prompt_logprobs,
+)
 from vllm.entrypoints.openai.chat_completion.protocol import (
     ChatCompletionLogProb,
     ChatCompletionLogProbs,
@@ -27,18 +30,9 @@ from vllm.entrypoints.openai.engine.protocol import (
     RequestResponseMetadata,
     UsageInfo,
 )
-from vllm.entrypoints.openai.engine.serving import OpenAIServing, clamp_prompt_logprobs
 from vllm.entrypoints.openai.models.serving import OpenAIServingModels
-from vllm.entrypoints.serve.disagg.mm_serde import decode_mm_kwargs_item
-from vllm.entrypoints.serve.disagg.protocol import (
-    GenerateRequest,
-    GenerateResponse,
-    GenerateResponseChoice,
-    GenerateResponseStreamChoice,
-    GenerateStreamResponse,
-)
-from vllm.entrypoints.serve.render.serving import OpenAIServingRender
-from vllm.entrypoints.utils import get_max_tokens, should_include_usage
+from vllm.entrypoints.serve.utils.api_utils import get_max_tokens, should_include_usage
+from vllm.entrypoints.serve.utils.request_logger import RequestLogger
 from vllm.inputs import EngineInput, mm_input
 from vllm.logger import init_logger
 from vllm.logprobs import Logprob
@@ -48,21 +42,31 @@ from vllm.multimodal.inputs import (
     PlaceholderRange,
 )
 from vllm.outputs import RequestOutput
+from vllm.renderers.online_renderer import OnlineRenderer
 from vllm.sampling_params import RequestOutputKind, SamplingParams
 from vllm.utils.collection_utils import as_list
 from vllm.v1.metrics.stats import RequestSpecDecodeStats
 
+from .mm_serde import decode_mm_kwargs_item
+from .protocol import (
+    GenerateRequest,
+    GenerateResponse,
+    GenerateResponseChoice,
+    GenerateResponseStreamChoice,
+    GenerateStreamResponse,
+)
+
 logger = init_logger(__name__)
 
 
-class ServingTokens(OpenAIServing):
+class ServingTokens(GenerateBaseServing):
     """Provides Tokens IN <> Tokens OUT functionality to vLLM API."""
 
     def __init__(
         self,
         engine_client: EngineClient,
         models: OpenAIServingModels,
-        openai_serving_render: OpenAIServingRender,
+        online_renderer: OnlineRenderer,
         *,
         request_logger: RequestLogger | None,
         force_no_detokenize: bool = False,
@@ -76,7 +80,7 @@ class ServingTokens(OpenAIServing):
             request_logger=request_logger,
             return_tokens_as_token_ids=return_tokens_as_token_ids,
         )
-        self.openai_serving_render = openai_serving_render
+        self.online_renderer = online_renderer
         self.enable_prompt_tokens_details = enable_prompt_tokens_details
         self.enable_log_outputs = enable_log_outputs
         self.force_no_detokenize = force_no_detokenize
@@ -169,7 +173,7 @@ class ServingTokens(OpenAIServing):
                 cache_salt=request.cache_salt,
             )
         else:
-            (engine_input,) = await self.openai_serving_render.preprocess_completion(
+            (engine_input,) = await self.online_renderer.preprocess_completion(
                 request,
                 prompt_input=request.token_ids,
                 prompt_embeds=None,
