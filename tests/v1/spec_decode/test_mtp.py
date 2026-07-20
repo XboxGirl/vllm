@@ -23,6 +23,7 @@ from vllm.config import (
 )
 from vllm.config.load import LoadConfig
 from vllm.model_executor.models.llama import LlamaForCausalLM
+from vllm.model_executor.models.utils import PPMissingLayer
 from vllm.platforms import current_platform
 from vllm.v1.attention.backends.registry import AttentionBackendEnum
 from vllm.v1.spec_decode.eagle import EagleProposer
@@ -113,6 +114,46 @@ def test_mtp_load_model_unified(mock_get_model, mock_get_layers, mock_get_pp_gro
     assert proposer.model.lm_head == target_model.lm_head
     # MTP shares embed_tokens with target model
     assert proposer.model.model.embed_tokens == target_model.model.embed_tokens
+
+
+@mock.patch("vllm.v1.spec_decode.llm_base_proposer.get_pp_group")
+@mock.patch("vllm.v1.spec_decode.llm_base_proposer.get_layers_from_vllm_config")
+@mock.patch("vllm.v1.spec_decode.llm_base_proposer.get_model")
+def test_mtp_load_model_shares_pp_missing_embeddings(
+    mock_get_model, mock_get_layers, mock_get_pp_group
+):
+    mock_model = mock.MagicMock()
+    mock_model.model.embed_tokens = PPMissingLayer()
+    mock_model.has_own_embed_tokens = False
+    mock_model.has_own_lm_head = False
+    mock_get_model.return_value = mock_model
+
+    target_attn_layers = {"target_attn_1": mock.MagicMock()}
+    all_attn_layers = {**target_attn_layers, "draft_attn_1": mock.MagicMock()}
+    mock_get_layers.side_effect = [
+        target_attn_layers,
+        {},
+        all_attn_layers,
+        {},
+    ]
+
+    mock_pp_group = mock.MagicMock()
+    mock_pp_group.world_size = 1
+    mock_get_pp_group.return_value = mock_pp_group
+
+    class _TargetModelStub(LlamaForCausalLM):
+        model: mock.MagicMock
+        lm_head: mock.MagicMock
+
+    target_model = mock.create_autospec(_TargetModelStub, instance=True)
+    target_model.model = mock.MagicMock()
+    target_model.model.embed_tokens = torch.nn.Embedding(10, 4)
+    target_model.lm_head = mock.MagicMock()
+
+    proposer = _create_mtp_proposer(num_speculative_tokens=4)
+    proposer.load_model(target_model)
+
+    assert proposer.model.model.embed_tokens is target_model.model.embed_tokens
 
 
 @pytest.mark.parametrize("num_speculative_tokens", [1])

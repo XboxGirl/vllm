@@ -1449,7 +1449,9 @@ class SpecDecodeBaseProposer:
                         " draft model."
                     )
                 elif (
-                    isinstance(target_embed_tokens.weight, torch.Tensor)
+                    hasattr(target_embed_tokens, "weight")
+                    and hasattr(self.model.model.embed_tokens, "weight")
+                    and isinstance(target_embed_tokens.weight, torch.Tensor)
                     and isinstance(self.model.model.embed_tokens.weight, torch.Tensor)
                     # TODO: Offload to CPU for comparison to avoid extra GPU memory
                     # usage in CI testing environments with limited GPU memory
@@ -1482,8 +1484,11 @@ class SpecDecodeBaseProposer:
                 # Only share when both models use the same embedding width.
                 # Guard with isinstance so non-Tensor weights (e.g. in tests)
                 # are not affected — mirrors the weight-equality check above.
-                if isinstance(target_embed_tokens.weight, torch.Tensor) and isinstance(
-                    draft_embed.weight, torch.Tensor
+                if (
+                    hasattr(target_embed_tokens, "weight")
+                    and hasattr(draft_embed, "weight")
+                    and isinstance(target_embed_tokens.weight, torch.Tensor)
+                    and isinstance(draft_embed.weight, torch.Tensor)
                 ):
                     target_dim = target_embed_tokens.weight.shape[-1]
                     draft_dim = draft_embed.weight.shape[-1]
